@@ -200,7 +200,7 @@ struct kyber_hctx_data {
 struct kyber_fairness {
 	struct blkcg_policy_data pd;
 	unsigned int weight;
-	struct list_head rqs;
+	struct list_head **rqs;
 	int budget;
 	bool idle;
 	spinlock_t lock;
@@ -249,16 +249,30 @@ static struct blkcg_policy_data *kyber_cpd_alloc(gfp_t gfp)
 
 	return &kf->pd;
 }
+
 static void kyber_cpd_init(struct blkcg_policy_data *cpd)
 {
 	struct kyber_fairness *kf = cpd_to_kf(cpd);
+	int i;
+	int j;
+	int nr_hctx;
 
 	kf->pd = cpd;
 
 	kf->weight = cgroup_subsys_on_dfl(io_cgrp_subsys) ?
 		CGROUP_WEIGHT_DFL : KYBER_WEIGHT_LEGACY_DFL;
 
-	INIT_LIST_HEAD(&kf->rqs);
+	nr_hctx = cpd->blkg->blk_hint->q->nr_hwqueues;
+	kf->rqs = kzalloc(sizeof(struct list_head*) * nr_hctx , GFP_KERNEL);
+	if (!kf->rqs)
+		return;
+
+	for (i = 0; i < nr_hctx; i++) {
+		kf->rqs[i] = 
+			kzalloc(sizeof(struct list_head) * KYBER_NUM_DOMAINS, GFP_KERNEL);
+		for (j = 0; j < KYBER_NUM_DOMAINS; j++)
+			INIT_LIST_HEAD(&kf->rqs[i][j]);
+	}
 
 	/* TODO: Replace kf->weight to some function calculating budget */
 	kf->budget = kf->weight;
@@ -348,6 +362,8 @@ static struct kyber_fairness *blkg_to_kf(struct blkcg_gq *blkg)
 }
 
 static int kyber_spend_budgets(struct request *rq) {
+	struct kyber_fairness *kf;
+
 	kf = blkg_to_kf(rq->bio->bi_blkg);
 	
 	if(kf->budget < 0)
@@ -950,6 +966,14 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 	rqs = &khd->rqs[khd->cur_domain];
 
 	/*
+#ifdef COFNIG_KYBER_FAIRNESS
+	ret = kyber_spend_budgets(rq);
+	if(ret == KYBER_SHORT_BUDGETS)
+		kyber_pend_request(rq);
+#endif
+	*/
+
+	/*
 	 * If we already have a flushed request, then we just need to get a
 	 * token for it. Otherwise, if there are pending requests in the kcqs,
 	 * flush the kcqs, but only if we can get a token. If not, we should
@@ -1005,15 +1029,8 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	 */
 	if (khd->batching < kyber_batch_size[khd->cur_domain]) {
 		rq = kyber_dispatch_cur_domain(kqd, khd, hctx);
-		if (rq) {
-#ifdef COFNIG_KYBER_FAIRNESS
-			ret = kyber_spend_budgets(rq);
-			if(ret == KYBER_SHORT_BUDGETS)
-				kyber_pend_request(rq);
-			else
-#endif
+		if (rq)
 			goto out;
-		}
 	}
 
 	/*
@@ -1033,15 +1050,8 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 			khd->cur_domain++;
 
 		rq = kyber_dispatch_cur_domain(kqd, khd, hctx);
-		if (rq) {
-#ifdef COFNIG_KYBER_FAIRNESS
-			ret = kyber_spend_budgets(rq);
-			if(ret == KYBER_SHORT_BUDGETS)
-				kyber_pend_request(rq);
-			else
-#endif
+		if (rq)
 			goto out;
-		}
 	}
 
 	rq = NULL;

@@ -12,6 +12,7 @@
 #include <linux/elevator.h>
 #include <linux/module.h>
 #include <linux/sbitmap.h>
+#include <linux/idr.h>
 
 #include "blk.h"
 #include "blk-mq.h"
@@ -21,6 +22,11 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/kyber.h>
+
+#define KYBER_MIN_WEIGHT			1
+#define KYBER_MAX_WEIGHT			1000
+#define KYBER_WEIGHT_LEGACY_DFL		100
+#define KYBER_SHORT_BUDGETS			1
 
 /*
  * Scheduling domains: the device is divided into multiple domains based on the
@@ -188,6 +194,198 @@ struct kyber_hctx_data {
 	struct sbq_wait_state *domain_ws[KYBER_NUM_DOMAINS];
 	atomic_t wait_index[KYBER_NUM_DOMAINS];
 };
+
+#ifdef CONFIG_KYBER_FAIRNESS
+
+struct kyber_fairness {
+	struct blkcg_policy_data pd;
+	unsigned int weight;
+	struct list_head **rqs;
+	int budget;
+	bool idle;
+	spinlock_t lock;
+}
+
+struct blkcg_policy blkcg_policy_kyber = {
+	.dfl_cftypes		= kyber_blkg_files,
+	.legacy_cftypes		= kyber_blkcg_legacy_files,
+
+	.cpd_alloc_fn		= kyber_cpd_alloc,
+	.cpd_init_fn		= kyber_cpd_init,
+	.cpd_bind_fn	    = kyber_cpd_init,
+	.cpd_free_fn		= kyber_cpd_free,
+
+	.pd_alloc_fn		= kyber_pd_alloc,
+	.pd_init_fn		    = kyber_pd_init,
+	.pd_offline_fn		= kyber_pd_offline,
+	.pd_free_fn		    = kyber_pd_free,
+};
+
+struct cftype kyber_blkg_files[] = {
+	{
+		.name = "kyber.weight",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.write = kyber_io_set_weight,
+	},
+	{} /* terminate */
+};
+
+struct cftype kyber_blkcg_legacy_files[] = {
+	{
+		.name = "kyber.weight",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.write_u64 = kyber_io_set_weight_legacy,
+	},
+	{ }	/* terminate */
+};
+
+static struct blkcg_policy_data *kyber_cpd_alloc(gfp_t gfp)
+{
+	struct kyber_fairness *kf;
+
+	kf = kzalloc(sizeof(*kf), gfp);
+	if (!kf)
+		return NULL;
+
+	return &kf->pd;
+}
+
+static void kyber_cpd_init(struct blkcg_policy_data *cpd)
+{
+	struct kyber_fairness *kf = cpd_to_kf(cpd);
+	int i;
+	int j;
+	int nr_hctx;
+
+	kf->pd = cpd;
+
+	kf->weight = cgroup_subsys_on_dfl(io_cgrp_subsys) ?
+		CGROUP_WEIGHT_DFL : KYBER_WEIGHT_LEGACY_DFL;
+
+	nr_hctx = cpd->blkg->blk_hint->q->nr_hwqueues;
+	kf->rqs = kzalloc(sizeof(struct list_head*) * nr_hctx , GFP_KERNEL);
+	if (!kf->rqs)
+		return;
+
+	for (i = 0; i < nr_hctx; i++) {
+		kf->rqs[i] = 
+			kzalloc(sizeof(struct list_head) * KYBER_NUM_DOMAINS, GFP_KERNEL);
+		for (j = 0; j < KYBER_NUM_DOMAINS; j++)
+			INIT_LIST_HEAD(&kf->rqs[i][j]);
+	}
+
+	/* TODO: Replace kf->weight to some function calculating budget */
+	kf->budget = kf->weight;
+	
+	kf->idle = false;
+
+	spin_lock_init(&kf->lock);
+}
+
+static void kyber_cpd_free(struct blkcg_policy_data *cpd)
+{
+	kfree(cpd_to_kf(cpd));
+}
+
+static struct blkg_policy_data *kyber_pd_alloc(gfp_t gfp, int node)
+{
+	/* TODO: Implement */
+}
+
+static void kyber_pd_init(struct blkg_policy_data *pd)
+{
+	/* TODO: Implement */
+}
+
+static void bfq_pd_offline(struct blkg_policy_data *pd)
+{
+	/* TODO: Implement */
+}
+
+static void bfq_pd_free(struct blkg_policy_data *pd)
+{
+	/* TODO: Implement */
+}
+
+static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
+				    struct cftype *cftype,
+				    u64 val)
+{
+	struct blkcg *blkcg = css_to_blkcg(css);
+	struct kyber_fairness *kf = blkcg_to_kf(blkcg);
+	int ret = -ERANGE;
+
+	if (val < KYBER_MIN_WEIGHT || val > KYBER_MAX_WEIGHT)
+		return ret;
+
+	ret = 0;
+	spin_lock_irq(&kf->lock);
+	kf->weight = (unsigned short)val;
+	spin_unlock_irq(&kf->lock);
+
+	return ret;
+}
+
+static ssize_t kyber_io_set_weight(struct kernfs_open_file *of,
+				 char *buf, size_t nbytes,
+				 loff_t off)
+{
+	u64 weight;
+	/* First unsigned long found in the file is used */
+	int ret = kstrtoull(strim(buf), 0, &weight);
+
+	if (ret)
+		return ret;
+
+	ret = kyber_io_set_weight_legacy(of_css(of), NULL, weight);
+	return ret ?: nbytes;
+}
+
+static struct kyber_fairness *cpd_to_kf(struct blkcg_policy_data *cpd)
+{
+	return cpd ? container_of(cpd, struct kyber_fairness, pd) : NULL;
+}
+
+static struct kyber_fairness *blkcg_to_kf(struct blkcg *blkcg)
+{
+	return cpd_to_kf(blkcg_to_cpd(blkcg, &blkcg_policy_kyber));
+}
+
+static struct kyber_fairness *pd_to_kf(struct blkg_policy_data *pd)
+{
+	return pd ? container_of(pd, struct kyber_fairness, pd) : NULL;
+}
+
+static struct kyber_fairness *blkg_to_kf(struct blkcg_gq *blkg)
+{
+	return pd_to_kf(blkg_to_pd(blkg, &blkcg_policy_kyber));
+}
+
+static int kyber_spend_budgets(struct request *rq) {
+	struct kyber_fairness *kf;
+
+	kf = blkg_to_kf(rq->bio->bi_blkg);
+	
+	if(kf->budget < 0)
+		return KYBER_SHORT_BUDGETS;
+		
+	spin_lock(&kf->lock);
+	kf->budget -= blk_rq_sectors(rq);
+	spin_unlock(&kf->lock);
+
+	return 0;
+}
+
+static void kyber_pend_request(struct request *rq) {
+	struct kyber_fairness *kf;
+
+	kf = blkg_to_kf(rq->bio->bi_blkg);
+
+	list_move_tail(&kf->rqs, &rq->queuelist);
+	/* TODO: Find better method */
+}
+
+#endif
 
 static int kyber_domain_wake(wait_queue_entry_t *wait, unsigned mode, int flags,
 			     void *key);
@@ -417,6 +615,7 @@ static int kyber_init_sched(struct request_queue *q, struct elevator_type *e)
 {
 	struct kyber_queue_data *kqd;
 	struct elevator_queue *eq;
+	int ret;
 
 	eq = elevator_alloc(q, e);
 	if (!eq)
@@ -427,6 +626,11 @@ static int kyber_init_sched(struct request_queue *q, struct elevator_type *e)
 		kobject_put(&eq->kobj);
 		return PTR_ERR(kqd);
 	}
+
+#ifdef COFNIG_KYBER_FAIRNESS
+	/* TODO: If ret value is not 0, handling the error */
+	ret = blkcg_activate_policy(q, &blkcg_policy_kyber);
+#endif
 
 	blk_stat_enable_accounting(q);
 
@@ -442,6 +646,10 @@ static void kyber_exit_sched(struct elevator_queue *e)
 	int i;
 
 	del_timer_sync(&kqd->timer);
+
+#ifdef COFNIG_KYBER_FAIRNESS
+	blkcg_deactivate_policy(kqd->q, &blkcg_policy_kyber);
+#endif
 
 	for (i = 0; i < KYBER_NUM_DOMAINS; i++)
 		sbitmap_queue_free(&kqd->domain_tokens[i]);
@@ -758,6 +966,14 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 	rqs = &khd->rqs[khd->cur_domain];
 
 	/*
+#ifdef COFNIG_KYBER_FAIRNESS
+	ret = kyber_spend_budgets(rq);
+	if(ret == KYBER_SHORT_BUDGETS)
+		kyber_pend_request(rq);
+#endif
+	*/
+
+	/*
 	 * If we already have a flushed request, then we just need to get a
 	 * token for it. Otherwise, if there are pending requests in the kcqs,
 	 * flush the kcqs, but only if we can get a token. If not, we should
@@ -800,7 +1016,9 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 {
 	struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
 	struct kyber_hctx_data *khd = hctx->sched_data;
+	struct kyber_fairness *kf;
 	struct request *rq;
+	int ret;
 	int i;
 
 	spin_lock(&khd->lock);
