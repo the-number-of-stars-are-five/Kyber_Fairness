@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/sbitmap.h>
 #include <linux/idr.h>
+#include <linux/blk-cgroup.h>
 
 #include "blk.h"
 #include "blk-mq.h"
@@ -185,6 +186,9 @@ struct kyber_queue_data {
 
 	/* Target latencies in nanoseconds. */
 	u64 latency_targets[KYBER_OTHER];
+#ifdef CONFIG_KYBER_FAIRNESS
+	struct list_head kfs;
+#endif
 };
 
 struct kyber_hctx_data {
@@ -204,127 +208,41 @@ struct kyber_hctx_data {
 struct kyber_fairness {
 	struct blkcg_policy_data pd;
 	unsigned int weight;
-	struct list_head **rqs;
+	struct list_head rqs;
 	int budget;
 	bool idle;
 	spinlock_t lock;
-}
-
-struct blkcg_policy blkcg_policy_kyber = {
-	.dfl_cftypes		= kyber_blkg_files,
-	.legacy_cftypes		= kyber_blkcg_legacy_files,
-
-	.cpd_alloc_fn		= kyber_cpd_alloc,
-	.cpd_init_fn		= kyber_cpd_init,
-	.cpd_bind_fn	    = kyber_cpd_init,
-	.cpd_free_fn		= kyber_cpd_free,
-
-	.pd_alloc_fn		= kyber_pd_alloc,
-	.pd_init_fn		    = kyber_pd_init,
-	.pd_offline_fn		= kyber_pd_offline,
-	.pd_free_fn		    = kyber_pd_free,
 };
 
-struct cftype kyber_blkg_files[] = {
-	{
-		.name = "kyber.weight",
-		.flags = CFTYPE_NOT_ON_ROOT,
-		.write = kyber_io_set_weight,
-	},
-	{} /* terminate */
-};
+static struct blkcg_policy blkcg_policy_kyber;
 
-struct cftype kyber_blkcg_legacy_files[] = {
-	{
-		.name = "kyber.weight",
-		.flags = CFTYPE_NOT_ON_ROOT,
-		.write_u64 = kyber_io_set_weight_legacy,
-	},
-	{} /* terminate */
-};
-
-static struct blkcg_policy_data *kyber_cpd_alloc(gfp_t gfp)
+static struct kyber_fairness *cpd_to_kf(struct blkcg_policy_data *cpd)
 {
-	struct kyber_fairness *kf;
-
-	kf = kzalloc(sizeof(*kf), gfp);
-	if (!kf)
-		return NULL;
-
-	return &kf->pd;
+	return cpd ? container_of(cpd, struct kyber_fairness, pd) : NULL;
 }
 
-static void kyber_cpd_init(struct blkcg_policy_data *cpd)
+static struct kyber_fairness *blkcg_to_kf(struct blkcg *blkcg)
 {
-	struct kyber_fairness *kf = cpd_to_kf(cpd);
-	int i;
-	int j;
-	int nr_hctx;
-
-	kf->pd = cpd;
-
-	kf->weight = cgroup_subsys_on_dfl(io_cgrp_subsys) ?
-		CGROUP_WEIGHT_DFL : KYBER_WEIGHT_LEGACY_DFL;
-
-	nr_hctx = cpd->blkg->blk_hint->q->nr_hwqueues;
-	kf->rqs = kzalloc(sizeof(struct list_head*) * nr_hctx , GFP_KERNEL);
-	if (!kf->rqs)
-		return;
-
-	for (i = 0; i < nr_hctx; i++) {
-		kf->rqs[i] = 
-			kzalloc(sizeof(struct list_head) * KYBER_NUM_DOMAINS, GFP_KERNEL);
-		for (j = 0; j < KYBER_NUM_DOMAINS; j++)
-			INIT_LIST_HEAD(&kf->rqs[i][j]);
-	}
-
-	/* TODO: Replace kf->weight to some function calculating budget */
-	kf->budget = kf->weight;
-	
-	kf->idle = false;
-
-	spin_lock_init(&kf->lock);
-}
-
-static void kyber_cpd_free(struct blkcg_policy_data *cpd)
-{
-	kfree(cpd_to_kf(cpd));
-}
-
-static struct blkg_policy_data *kyber_pd_alloc(gfp_t gfp, int node)
-{
-	/* TODO: Implement */
-}
-
-static void kyber_pd_init(struct blkg_policy_data *pd)
-{
-	/* TODO: Implement */
-}
-
-static void bfq_pd_offline(struct blkg_policy_data *pd)
-{
-	/* TODO: Implement */
-}
-
-static void bfq_pd_free(struct blkg_policy_data *pd)
-{
-	/* TODO: Implement */
+	return cpd_to_kf(blkcg_to_cpd(blkcg, &blkcg_policy_kyber));
 }
 
 static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
-				    struct cftype *cftype,
-				    u64 val)
+		struct cftype *cftype,
+		u64 val)
 {
-	struct blkcg *blkcg = css_to_blkcg(css);
-	struct kyber_fairness *kf = blkcg_to_kf(blkcg);
+	struct blkcg *blkcg;
+	struct kyber_fairness *kf;
 	int ret = -ERANGE;
 
 	if (val < KYBER_MIN_WEIGHT || val > KYBER_MAX_WEIGHT)
 		return ret;
 
+	blkcg = css_to_blkcg(css);
+	kf = blkcg_to_kf(blkcg);
+
 	ret = 0;
 	spin_lock_irq(&kf->lock);
-	kf->weight = (unsigned short)val;
+	kf->weight = (unsigned int)val;
 	spin_unlock_irq(&kf->lock);
 
 	return ret;
@@ -345,32 +263,106 @@ static ssize_t kyber_io_set_weight(struct kernfs_open_file *of,
 	return ret ?: nbytes;
 }
 
-static struct kyber_fairness *cpd_to_kf(struct blkcg_policy_data *cpd)
+static int kyber_io_show_weight(struct seq_file *sf, void *v)
 {
-	return cpd ? container_of(cpd, struct kyber_fairness, pd) : NULL;
+	struct blkcg *blkcg = css_to_blkcg(seq_css(sf));
+	struct kyber_fairness *kf = blkcg_to_kf(blkcg);
+	unsigned int val = 0;
+
+	if (blkcg)
+		val = kf->weight;
+
+	seq_printf(sf, "%u\n", val);
+
+	return 0;
 }
 
-static struct kyber_fairness *blkcg_to_kf(struct blkcg *blkcg)
-{
-	return cpd_to_kf(blkcg_to_cpd(blkcg, &blkcg_policy_kyber));
-}
+static struct cftype kyber_blkg_files[] = {
+	{
+		.name = "kyber.weight",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = kyber_io_show_weight,
+		.write = kyber_io_set_weight,
+	},
+	{} /* terminate */
+};
 
-static struct kyber_fairness *pd_to_kf(struct blkg_policy_data *pd)
-{
-	return pd ? container_of(pd, struct kyber_fairness, pd) : NULL;
-}
+static struct cftype kyber_blkcg_legacy_files[] = {
+	{
+		.name = "kyber.weight",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = kyber_io_show_weight,
+		.write_u64 = kyber_io_set_weight_legacy,
+	},
+	{} /* terminate */
+};
 
-static struct kyber_fairness *blkg_to_kf(struct blkcg_gq *blkg)
+static struct blkcg_policy_data *kyber_cpd_alloc(gfp_t gfp)
 {
-	return pd_to_kf(blkg_to_pd(blkg, &blkcg_policy_kyber));
-}
-
-static int kyber_spend_budgets(struct request *rq) {
 	struct kyber_fairness *kf;
 
-	kf = blkg_to_kf(rq->bio->bi_blkg);
+	kf = kzalloc(sizeof(*kf), gfp);
+	if (!kf)
+		return NULL;
+
+	return &kf->pd;
+}
+
+static void kyber_cpd_init(struct blkcg_policy_data *cpd)
+{
+	struct kyber_fairness *kf = cpd_to_kf(cpd);
+
+	kf->weight = cgroup_subsys_on_dfl(io_cgrp_subsys) ?
+		CGROUP_WEIGHT_DFL : KYBER_WEIGHT_LEGACY_DFL;
+
+	INIT_LIST_HEAD(&kf->rqs);
+	kf->budget = kf->weight;
+	trace_printk("budget: %d\n", kf->budget);
+
+/*
+	kf->rqs = kzalloc(sizeof(struct list_head*) * nr_hctx , GFP_KERNEL);
+	if (!kf->rqs)
+		return;
+
+	for (i = 0; i < nr_hctx; i++) {
+		kf->rqs[i] = 
+			kzalloc(sizeof(struct list_head) * KYBER_NUM_DOMAINS, GFP_KERNEL);
+		for (j = 0; j < KYBER_NUM_DOMAINS; j++)
+			INIT_LIST_HEAD(&kf->rqs[i][j]);
+	}
+
+	TODO: Replace kf->weight to some function calculating budget
+	kf->budget = kf->weight;
+*/	
+
+	kf->idle = false;
+
+	spin_lock_init(&kf->lock);
+}
+
+static void kyber_cpd_free(struct blkcg_policy_data *cpd)
+{
+	kfree(cpd_to_kf(cpd));
+}
+
+static struct blkcg_policy blkcg_policy_kyber = {
+	.dfl_cftypes		= kyber_blkg_files,
+	.legacy_cftypes		= kyber_blkcg_legacy_files,
+
+	.cpd_alloc_fn		= kyber_cpd_alloc,
+	.cpd_init_fn		= kyber_cpd_init,
+	.cpd_bind_fn		= kyber_cpd_init,
+	.cpd_free_fn		= kyber_cpd_free,
+};
+
+static int kyber_spend_budgets(struct request *rq)
+{
+	struct kyber_fairness *kf;
+
+	kf = blkcg_to_kf(bio_blkcg(rq->bio));
+	trace_printk("blkcg_gq: %d, %d\n", kf->pd.plid, kf->budget);
 	
-	if(kf->budget < 0)
+	if (kf->budget < 0)
 		return KYBER_SHORT_BUDGETS;
 		
 	spin_lock(&kf->lock);
@@ -380,15 +372,17 @@ static int kyber_spend_budgets(struct request *rq) {
 	return 0;
 }
 
-static void kyber_pend_request(struct request *rq) {
+static unsigned int kyber_sched_domain(unsigned int op);
+
+static void kyber_pend_request(struct request *rq)
+{
 	struct kyber_fairness *kf;
 
-	kf = blkg_to_kf(rq->bio->bi_blkg);
+	kf = blkcg_to_kf(bio_blkcg(rq->bio));
 
 	list_move_tail(&kf->rqs, &rq->queuelist);
 	/* TODO: Find better method */
 }
-
 #endif
 
 static int kyber_domain_wake(wait_queue_entry_t *wait, unsigned mode, int flags,
@@ -570,6 +564,7 @@ static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 	unsigned int shift;
 	int ret = -ENOMEM;
 	int i;
+	struct blkcg_gq *blkg;
 
 	kqd = kzalloc_node(sizeof(*kqd), GFP_KERNEL, q->node);
 	if (!kqd)
@@ -605,6 +600,11 @@ static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 	shift = kyber_sched_tags_shift(q);
 	kqd->async_depth = (1U << shift) * KYBER_ASYNC_PERCENT / 100U;
 
+	INIT_LIST_HEAD(&kqd->kfs);
+	list_for_each_entry(blkg, &q->blkg_list, q_node) {
+		trace_printk("blkg: %d", blkg);
+	}
+
 	return kqd;
 
 err_buckets:
@@ -631,15 +631,21 @@ static int kyber_init_sched(struct request_queue *q, struct elevator_type *e)
 		return PTR_ERR(kqd);
 	}
 
-#ifdef COFNIG_KYBER_FAIRNESS
-	/* TODO: If ret value is not 0, handling the error */
-	ret = blkcg_activate_policy(q, &blkcg_policy_kyber);
-#endif
-
 	blk_stat_enable_accounting(q);
 
 	eq->elevator_data = kqd;
 	q->elevator = eq;
+
+#ifdef COFNIG_KYBER_FAIRNESS
+	/* TODO: If ret value is not 0, handling the error */
+	ret = blkcg_activate_policy(q, &blkcg_policy_kyber);
+
+	if (ret) {
+		kfree(kqd);
+		kobject_put(&eq->kobj);
+		return ret;
+	}
+#endif
 
 	return 0;
 }
@@ -965,17 +971,26 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 {
 	struct list_head *rqs;
 	struct request *rq;
+	struct blkcg_gq *blkg;
+	struct kyber_fairness *kf;
+	int ret;
 	int nr;
+	int i;
 
 	rqs = &khd->rqs[khd->cur_domain];
 
+#ifdef CONFIG_KYBER_FAIRNESS
 	/*
-#ifdef COFNIG_KYBER_FAIRNESS
-	ret = kyber_spend_budgets(rq);
-	if(ret == KYBER_SHORT_BUDGETS)
-		kyber_pend_request(rq);
+	 * TODO: Flush all remainder queue.
+	 */
+	i=0;
+	list_for_each_entry(blkg, &kqd->q->blkg_list, q_node) {
+		kf = blkcg_to_kf(blkg->blkcg);
+		rq = list_first_entry_or_null(kf->rqs, struct request, queuelist);
+		trace_printk("[%d] blkg_list: %d\n", i++, blkg->blkcg);
+		return rq;
+	}
 #endif
-	*/
 
 	/*
 	 * If we already have a flushed request, then we just need to get a
@@ -987,6 +1002,11 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 	 */
 	rq = list_first_entry_or_null(rqs, struct request, queuelist);
 	if (rq) {
+#ifdef CONFIG_KYBER_FAIRNESS
+		ret = kyber_spend_budgets(rq);
+		//if (ret == KYBER_SHORT_BUDGETS)
+		//		kyber_pend_request(rq);
+#endif
 		nr = kyber_get_domain_token(kqd, khd, hctx);
 		if (nr >= 0) {
 			khd->batching++;
@@ -1256,12 +1276,27 @@ static struct elevator_type kyber_sched = {
 
 static int __init kyber_init(void)
 {
-	return elv_register(&kyber_sched);
+	int ret;
+
+	ret = blkcg_policy_register(&blkcg_policy_kyber);
+
+	if (ret)
+		return ret;
+
+	ret = elv_register(&kyber_sched);
+
+	if (ret) {
+		blkcg_policy_unregister(&blkcg_policy_kyber);
+		return ret;
+	}
+
+	return 0;
 }
 
 static void __exit kyber_exit(void)
 {
 	elv_unregister(&kyber_sched);
+	blkcg_policy_unregister(&blkcg_policy_kyber);
 }
 
 module_init(kyber_init);
