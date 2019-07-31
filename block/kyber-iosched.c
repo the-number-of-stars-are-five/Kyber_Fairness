@@ -314,44 +314,51 @@ static struct cftype kyber_blkcg_legacy_files[] = {
 
 static struct blkcg_policy_data *kyber_cpd_alloc(gfp_t gfp)
 {
+	trace_printk("cpd_alloc start\n");
 	struct kyber_fairness_data *kfd;
 
 	kfd = kzalloc(sizeof(*kfd), gfp);
 	if (!kfd)
 		return NULL;
 
+	trace_printk("cpd_alloc finish\n");
 	return &kfd->pd;
 }
 
 static void kyber_cpd_init(struct blkcg_policy_data *cpd)
 {
+	trace_printk("cpd_init start\n");
 	struct kyber_fairness_data *kfd = cpd_to_kfd(cpd);
 
 	kfd->weight = cgroup_subsys_on_dfl(io_cgrp_subsys) ?
 		CGROUP_WEIGHT_DFL : KYBER_WEIGHT_LEGACY_DFL;
 
-	trace_printk("cpd init\n");
+	trace_printk("cpd init finish\n");
 }
 
 static void kyber_cpd_free(struct blkcg_policy_data *cpd)
 {
+	trace_printk("cpd free start\n");
 	kfree(cpd_to_kfd(cpd));
+	trace_printk("cpd free finish\n");
 }
 
 static struct blkg_policy_data *kyber_pd_alloc(gfp_t gfp, int node)
 {
+	trace_printk("pd alloc start\n");
 	struct kyber_fairness *kf;
 
 	kf = kzalloc_node(sizeof(*kf), gfp, node);
 	if (!kf)
 		return NULL;
-	trace_printk("pd alloc\n");
+	trace_printk("pd alloc finish\n");
 
 	return &kf->pd;	
 }
 
 static void kyber_pd_init(struct blkg_policy_data *pd)
 {
+	trace_printk("pd init start\n");
 	struct blkcg_gq *blkg = pd_to_blkg(pd);
 	struct kyber_fairness *kf = blkg_to_kf(blkg);
 	struct kyber_fairness_data *kfd = blkcg_to_kfd(blkg->blkcg);
@@ -368,27 +375,30 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	kf->idle = false;
 
 	spin_lock_init(&kf->lock);
-	trace_printk("pd init\n");
 
 	queue_for_each_hw_ctx(q, hctx, j) {
 		for (i = 0; i < hctx->nr_ctx; i++) {
 			khd = hctx->sched_data;
 			if (khd) {
-				trace_printk("[%d] add \n", kf);
+				trace_printk("[%d] add, %d\n", kf, &khd->kcqs[i].kfs);
 				list_add_tail(&kf->queuelist, &khd->kcqs[i].kfs);
 			} else
 				trace_printk("no khd\n");
 		}
 	}
+	trace_printk("pd init finish\n");
 }
 
 static void kyber_pd_offline(struct blkg_policy_data *pd)
 {
+	trace_printk("pd offline !\n");
 }
 
 static void kyber_pd_free(struct blkg_policy_data *pd)
 {
+	trace_printk("pd free start\n");
 	kfree(pd_to_kf(pd));
+	trace_printk("pd free finish\n");
 }
 
 static struct blkcg_policy blkcg_policy_kyber = {
@@ -457,6 +467,7 @@ static void flush_latency_buckets(struct kyber_queue_data *kqd,
 
 	for (bucket = 0; bucket < KYBER_LATENCY_BUCKETS; bucket++)
 		buckets[bucket] += atomic_xchg(&cpu_buckets[bucket], 0);
+	trace_printk("flush finish\n");
 }
 
 /*
@@ -853,9 +864,9 @@ static bool kyber_bio_merge(struct blk_mq_hw_ctx *hctx, struct bio *bio)
 	struct list_head *rq_list = &kf->rq_list[sched_domain];
 	bool merged;
 
-	spin_lock(&kf->lock);
+	//spin_lock(&kf->lock);
 	merged = blk_mq_bio_list_merge(hctx->queue, rq_list, bio);
-	spin_unlock(&kf->lock);
+	//spin_unlock(&kf->lock);
 	blk_mq_put_ctx(ctx);
 
 	trace_printk("merge finish\n");
@@ -880,7 +891,7 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 		struct kyber_ctx_queue *kcq = &khd->kcqs[rq->mq_ctx->index_hw[hctx->type]];
 		struct list_head *head = &kf->rq_list[sched_domain];
 
-		spin_lock(&kf->lock);
+		//spin_lock(&kf->lock);
 		if (at_head)
 			list_move(&rq->queuelist, head);
 		else
@@ -888,7 +899,7 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 		sbitmap_set_bit(&khd->kcq_map[sched_domain],
 				rq->mq_ctx->index_hw[hctx->type]);
 		blk_mq_sched_request_inserted(rq);
-		spin_unlock(&kf->lock);
+		//spin_unlock(&kf->lock);
 	}
 	trace_printk("insert finish\n");
 }
@@ -955,14 +966,14 @@ static bool flush_busy_kcq(struct sbitmap *sb, unsigned int bitnr, void *data)
 	trace_printk("flush start\n");
 	struct flush_kcq_data *flush_data = data;
 	struct kyber_ctx_queue *kcq = &flush_data->khd->kcqs[bitnr];
-	struct kyber_fairness *kf;
+	struct kyber_fairness *kf, *next;
 
-	list_for_each_entry(kf, &kcq->kfs, queuelist) {
-		spin_lock(&kf->lock);
+	list_for_each_entry_safe(kf, next, &kcq->kfs, queuelist) {
+		//spin_lock(&kf->lock);
 		list_splice_tail_init(&kf->rq_list[flush_data->sched_domain],
 				      flush_data->list);
 		sbitmap_clear_bit(sb, bitnr);
-		spin_unlock(&kf->lock);
+		//spin_unlock(&kf->lock);
 	}
 
 	trace_printk("flush finish\n");
@@ -1089,7 +1100,7 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 		}
 	}
 #endif
-	trace_printk("curdispatch finish\n");
+	trace_printk("cur_dispatch finish\n");
 	/* There were either no pending requests or no tokens. */
 	return NULL;
 }
