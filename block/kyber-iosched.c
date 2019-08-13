@@ -198,7 +198,6 @@ struct kyber_hctx_data {
 struct kyber_fairness {
 	struct blkg_policy_data pd;
 	int budget;
-	int id;
 	bool idle;
 	spinlock_t lock;
 };
@@ -237,10 +236,6 @@ static struct kyber_fairness *blkg_to_kf(struct blkcg_gq *blkg)
 
 static int bio_to_css_id(struct bio *bio)
 {
-	trace_printk("bio:%d\n", bio);
-	trace_printk("bi_blkg:%d\n", bio->bi_blkg);
-	trace_printk("blkcg:%d\n", bio->bi_blkg->blkcg);
-	trace_printk("css.id:%d\n", bio->bi_blkg->blkcg->css.id);
 	return bio->bi_blkg->blkcg->css.id;
 }
 
@@ -254,20 +249,8 @@ static struct kyber_fairness *css_to_kf(struct cgroup_subsys_state *css, struct 
 		return NULL;
 
 	blkcg = css_to_blkcg(css);
-	if (!blkcg) {
-		trace_printk("no blkcg\n");
-		return NULL;
-	}
 	blkg = blkg_lookup_create(blkcg, q);
-	if (!blkg) {
-		trace_printk("no blkg\n");
-		return NULL;
-	}
 	kf = blkg_to_kf(blkg);
-	if (!kf) {
-		trace_printk("no kf\n");
-		return NULL;
-	}
 
 	return kf;
 }
@@ -385,7 +368,6 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 
 	kf->budget = kfd->weight;
 	kf->idle = true;
-	kf->id = pd->plid;
 	spin_lock_init(&kf->lock);
 }
 
@@ -414,10 +396,6 @@ static struct blkcg_policy blkcg_policy_kyber = {
 	.pd_offline_fn		= kyber_pd_offline,
 	.pd_free_fn			= kyber_pd_free,
 };
-
-
-static int kyber_domain_wake(wait_queue_entry_t *wait, unsigned mode, int flags,
-			     void *key);
 
 static unsigned int kyber_sched_domain(unsigned int op)
 {
@@ -668,6 +646,8 @@ static int kyber_init_sched(struct request_queue *q, struct elevator_type *e)
 		return ret;
 	}
 
+	trace_printk("sched no error\n");
+
 	return 0;
 }
 
@@ -692,10 +672,13 @@ static void kyber_ctx_queue_init(struct kyber_ctx_queue *kcq)
 
 	spin_lock_init(&kcq->lock);
 
-	for (i = 0; i < KYBER_MAX_CGROUP; i++)
+	for (i = 1; i < KYBER_MAX_CGROUP; i++)
 		for (j = 0; j < KYBER_NUM_DOMAINS; j++)
 			INIT_LIST_HEAD(&kcq->rq_list[i][j]);
 }
+
+static int kyber_domain_wake(wait_queue_entry_t *wait, unsigned mode, int flags,
+			     void *key);
 
 static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
 {
@@ -716,15 +699,18 @@ static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
 	for (i = 0; i < hctx->nr_ctx; i++)
 		kyber_ctx_queue_init(&khd->kcqs[i]);
 
-	for (i = 0; i < KYBER_MAX_CGROUP; i++) {
+	for (i = 1; i < KYBER_MAX_CGROUP; i++) {
 		for (j = 0; j < KYBER_NUM_DOMAINS; j++) {
+			INIT_LIST_HEAD(&khd->rqs[i][j]);
+
 			if (sbitmap_init_node(&khd->kcq_map[i][j], hctx->nr_ctx,
 					      ilog2(8), GFP_KERNEL, hctx->numa_node)) {
+				trace_printk("sbitmap error\n");
 				do {
 					while (--j >= 0)
 						sbitmap_free(&khd->kcq_map[i][j]);
 					j = KYBER_NUM_DOMAINS;
-				} while (--i >= 0);
+				} while (--i >= 1);
 				
 				goto err_kcqs;
 			}
@@ -734,8 +720,6 @@ static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
 	spin_lock_init(&khd->lock);
 
 	for (i = 0; i < KYBER_NUM_DOMAINS; i++) {
-		for (j = 0; j < KYBER_MAX_CGROUP; j++)
-			INIT_LIST_HEAD(&khd->rqs[j][i]);
 		khd->domain_wait[i].sbq = NULL;
 		init_waitqueue_func_entry(&khd->domain_wait[i].wait,
 					  kyber_domain_wake);
@@ -751,6 +735,8 @@ static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
 	sbitmap_queue_min_shallow_depth(&hctx->sched_tags->bitmap_tags,
 					kqd->async_depth);
 
+	trace_printk("hctx no error\n");
+
 	return 0;
 
 err_kcqs:
@@ -765,7 +751,7 @@ static void kyber_exit_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
 	struct kyber_hctx_data *khd = hctx->sched_data;
 	int i, j;
 
-	for (i = 0; i < KYBER_MAX_CGROUP; i++)
+	for (i = 1; i < KYBER_MAX_CGROUP; i++)
 		for (j = 0; j < KYBER_NUM_DOMAINS; j++)
 			sbitmap_free(&khd->kcq_map[i][j]);
 
@@ -818,13 +804,14 @@ static bool kyber_bio_merge(struct blk_mq_hw_ctx *hctx, struct bio *bio)
 	unsigned int sched_domain = kyber_sched_domain(bio->bi_opf);
 	struct list_head *rq_list = &kcq->rq_list[bio_to_css_id(bio)][sched_domain];
 	bool merged;
-	trace_printk("merge\n");
+	trace_printk("merge start\n");
 
 	spin_lock(&kcq->lock);
 	merged = blk_mq_bio_list_merge(hctx->queue, rq_list, bio);
 	spin_unlock(&kcq->lock);
 	blk_mq_put_ctx(ctx);
 
+	trace_printk("merge done\n");
 	return merged;
 }
 
@@ -838,12 +825,13 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 {
 	struct kyber_hctx_data *khd = hctx->sched_data;
 	struct request *rq, *next;
-	trace_printk("insert\n");
+	trace_printk("insert start\n");
 
 	list_for_each_entry_safe(rq, next, rq_list, queuelist) {
 		unsigned int sched_domain = kyber_sched_domain(rq->cmd_flags);
 		struct kyber_ctx_queue *kcq = &khd->kcqs[rq->mq_ctx->index_hw[hctx->type]];
 		int id = bio_to_css_id(rq->bio);
+		trace_printk("[%d] inserting\n", id);
 		struct list_head *head = &kcq->rq_list[id][sched_domain];
 
 		spin_lock(&kcq->lock);
@@ -856,6 +844,7 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 		blk_mq_sched_request_inserted(rq);
 		spin_unlock(&kcq->lock);
 	}
+	trace_printk("insert done\n");
 }
 
 static void kyber_finish_request(struct request *rq)
@@ -909,7 +898,7 @@ static void kyber_completed_request(struct request *rq, u64 now)
 
 struct flush_kcq_data {
 	struct kyber_hctx_data *khd;
-	unsigned int sched_kf;
+	unsigned int sched_id;
 	unsigned int sched_domain;
 	struct list_head *list;
 };
@@ -920,7 +909,7 @@ static bool flush_busy_kcq(struct sbitmap *sb, unsigned int bitnr, void *data)
 	struct kyber_ctx_queue *kcq = &flush_data->khd->kcqs[bitnr];
 
 	spin_lock(&kcq->lock);
-	list_splice_tail_init(&kcq->rq_list[flush_data->sched_kf][flush_data->sched_domain],
+	list_splice_tail_init(&kcq->rq_list[flush_data->sched_id][flush_data->sched_domain],
 			      flush_data->list);
 	sbitmap_clear_bit(sb, bitnr);
 	spin_unlock(&kcq->lock);
@@ -929,18 +918,18 @@ static bool flush_busy_kcq(struct sbitmap *sb, unsigned int bitnr, void *data)
 }
 
 static void kyber_flush_busy_kcqs(struct kyber_hctx_data *khd,
-				  unsigned int sched_kf,
+				  unsigned int sched_id,
 				  unsigned int sched_domain,
 				  struct list_head *list)
 {
 	struct flush_kcq_data data = {
 		.khd = khd,
-		.sched_kf = sched_kf,
+		.sched_id = sched_id,
 		.sched_domain = sched_domain,
 		.list = list,
 	};
 
-	sbitmap_for_each_set(&khd->kcq_map[sched_kf][sched_domain],
+	sbitmap_for_each_set(&khd->kcq_map[sched_id][sched_domain],
 			     flush_busy_kcq, &data);
 }
 
@@ -1103,6 +1092,7 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 		
 		kf = css_to_kf(css, q);
 		if (!kf) {
+			trace_printk("[%d] no kf\n", id);
 			kyber_refill_budget(q);
 			id = 1;
 			continue;
