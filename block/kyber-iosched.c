@@ -478,6 +478,28 @@ static void kyber_resize_domain(struct kyber_queue_data *kqd,
 	}
 }
 
+static void kyber_refill_budget(struct request_queue *q, int size)
+{
+	struct cgroup_subsys_state *css;
+	struct kyber_fairness *kf;
+	struct kyber_fairness_data *kfd;
+	int id;
+
+	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+		rcu_read_lock();
+		css = css_from_id(id, &io_cgrp_subsys);
+		rcu_read_unlock();
+		
+		kf = css_to_kf(css, q);
+		if (!kf)
+			return;
+
+		kfd = blkcg_to_kfd(css_to_blkcg(css));
+
+		kf->budget = kfd->weight * size;
+	}
+}
+
 static void kyber_timer_fn(struct timer_list *t)
 {
 	struct kyber_queue_data *kqd = from_timer(kqd, t, timer);
@@ -840,8 +862,15 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 static void kyber_finish_request(struct request *rq)
 {
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
+	struct kyber_fairness *kf;
 
 	rq_clear_domain_token(kqd, rq);
+
+	kf = blkg_to_kf(rq->bio->bi_blkg);
+	spin_lock(&kf->lock);
+	printk("finish sectors: %d\n", blk_rq_sectors(rq))
+	kf->budget += blk_rq_sectors(rq);
+	spin_unlock(&kf->lock);
 }
 
 static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
@@ -1046,26 +1075,29 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 	return NULL;
 }
 
-static void kyber_refill_budget(struct request_queue *q)
+static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
 {
-	struct cgroup_subsys_state *css;
 	struct kyber_fairness *kf;
-	struct kyber_fairness_data *kfd;
-	int id;
+	struct cgroup_subsys_state *css;
 
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		rcu_read_lock();
-		css = css_from_id(id, &io_cgrp_subsys);
-		rcu_read_unlock();
-		
-		kf = css_to_kf(css, q);
-		if (!kf)
-			return;
+	rcu_read_lock();
+	css = css_from_id(id, &io_cgrp_subsys);
+	rcu_read_unlock();
+	kf = css_to_kf(css, hctx->queue);
 
-		kfd = blkcg_to_kfd(css_to_blkcg(css));
+	if (!kf)
+		return -ERANGE;
 
-		kf->budget = kfd->weight * 10;
+	kf->idle = true;
+	for (domain = 0; domain < KYBER_NUM_DOMAINS; domain++) {
+		if (!list_empty_careful(&khd->rqs[id][domain]) ||
+				sbitmap_any_bit_set(&khd->kcq_map[id][domain])) {
+			kf->idle = false;
+			return 1;
+		}
 	}
+
+	return 0;
 }
 
 static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
@@ -1073,34 +1105,26 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 	struct cgroup_subsys_state *css;
 	struct kyber_fairness *kf;
 	struct request_queue *q = hctx->queue;
-	int id, idle_id;
+	int id;
 
-	idle_id = 0;
 	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		rcu_read_lock();
-		css = css_from_id(id, &io_cgrp_subsys);
-		rcu_read_unlock();
-		
-		kf = css_to_kf(css, q);
-		if (!kf) {
-			kyber_refill_budget(q);
-
-			if (idle_id)
-				return idle_id;
-			else
-				return 1;
+		switch (kyber_is_active(id, hctx)) {
+			case -ERANGE:
+				return 0;
+			case 1:
+				rcu_read_lock();
+				css = css_from_id(id, &io_cgrp_subsys);
+				rcu_read_unlock();
+				
+				kf = css_to_kf(css, q);
+				if (kf->budget > 0)
+					return id;
+			default:
 		}
-		
-		if (!kf->idle) {
-			idle_id = id;
-			if (kf->budget > 0)
-				break;
-		}
-
-		kf = NULL;
 	}
 
-	return id;
+	/* NEVER TOUCH THIS LINE */
+	return -ERANGE;
 }
 
 static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
@@ -1114,6 +1138,9 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	cgroup_id = kyber_choose_cgroup(hctx);
 
 	printk("[%d] selected cgroup_id\n", cgroup_id);
+
+	if (!cgroup_id)
+		 goto nothing;
 	
 	/*
 	 * First, if we are still entitled to batch, try to dispatch a request
@@ -1146,6 +1173,7 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 			goto out;
 	}
 
+nothing:
 	rq = NULL;
 out:
 	spin_unlock(&khd->lock);
@@ -1156,26 +1184,15 @@ out:
 static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 {
 	struct kyber_hctx_data *khd = hctx->sched_data;
-	struct kyber_fairness *kf;
-	struct cgroup_subsys_state *css;
 	int id, domain;
 
 	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		rcu_read_lock();
-		css = css_from_id(id, &io_cgrp_subsys);
-		rcu_read_unlock();
-		kf = css_to_kf(css, hctx->queue);
-
-		if (!kf)
-			break;
-
-		kf->idle = true;
-		for (domain = 0; domain < KYBER_NUM_DOMAINS; domain++) {
-			if (!list_empty_careful(&khd->rqs[id][domain]) ||
-				 sbitmap_any_bit_set(&khd->kcq_map[id][domain])) {
-				kf->idle = false;
+		switch (kyber_is_active(id, hctx)) {
+			case -ERANGE:
+				return false;
+			case 1:
 				return true;
-			}
+			default:
 		}
 	}
 
