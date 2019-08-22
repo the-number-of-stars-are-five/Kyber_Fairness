@@ -868,7 +868,7 @@ static void kyber_finish_request(struct request *rq)
 
 	kf = blkg_to_kf(rq->bio->bi_blkg);
 	spin_lock(&kf->lock);
-	printk("finish sectors: %d\n", blk_rq_sectors(rq))
+	printk("finish sectors: %d\n", blk_rq_sectors(rq));
 	kf->budget += blk_rq_sectors(rq);
 	spin_unlock(&kf->lock);
 }
@@ -1079,6 +1079,8 @@ static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
 {
 	struct kyber_fairness *kf;
 	struct cgroup_subsys_state *css;
+	struct kyber_hctx_data *khd = hctx->sched_data;
+    int domain;
 
 	rcu_read_lock();
 	css = css_from_id(id, &io_cgrp_subsys);
@@ -1119,7 +1121,6 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 				kf = css_to_kf(css, q);
 				if (kf->budget > 0)
 					return id;
-			default:
 		}
 	}
 
@@ -1183,8 +1184,7 @@ out:
 
 static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 {
-	struct kyber_hctx_data *khd = hctx->sched_data;
-	int id, domain;
+	int id;
 
 	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
 		switch (kyber_is_active(id, hctx)) {
@@ -1192,7 +1192,6 @@ static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 				return false;
 			case 1:
 				return true;
-			default:
 		}
 	}
 
