@@ -884,6 +884,7 @@ static void kyber_completed_request(struct request *rq, u64 now)
 {
     struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
     struct kyber_fairness *kf;
+    struct completion *completion;
     struct kyber_cpu_latency *cpu_latency;
     unsigned int sched_domain;
     u64 target;
@@ -904,10 +905,14 @@ static void kyber_completed_request(struct request *rq, u64 now)
 
     if (rq) {
         printk("[complete]rq_sectors: %d\n", blk_rq_sectors(rq));
-        printk("[complete]bio: %d, biotail: %d\n", rq->bio, rq->biotail);
-        if (rq->bio) {
-            if (rq->bio->bi_blkg) {
-                kf = blkg_to_kf(rq->bio->bi_blkg);
+        printk("[complete]extra_len: %d\n", rq->extra_len);
+        completion = (struct completion *)rq->end_io_data;
+        printk("[complete]endio_data: %d\n", completion->done);
+        if (rq->part)
+            printk("[complete]nr_sectis: %d\n", part_nr_sects_read(rq->part)); 
+        if (rq->biotail) {
+            if (rq->biotail->bi_blkg) {
+                kf = blkg_to_kf(rq->biotail->bi_blkg);
                 spin_lock(&kf->lock);
                 kf->budget += blk_rq_sectors(rq);
                 printk("[complete]budget: %d -> %d\n", kf->budget+blk_rq_sectors(rq), kf->budget);
@@ -1120,7 +1125,6 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
     for (id = 1; id < KYBER_MAX_CGROUP; id++) {
         switch (kyber_is_active(id, hctx)) {
             case -ERANGE:
-                kyber_refill_budget(q, 10);
                 return 0;
             case 1:
                 rcu_read_lock();
