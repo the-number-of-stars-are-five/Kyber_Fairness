@@ -748,9 +748,6 @@ static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
     sbitmap_queue_min_shallow_depth(&hctx->sched_tags->bitmap_tags,
             kqd->async_depth);
 
-    printk("init hctx\n");
-    printk("-ERANGE: %d\n", -ERANGE);
-
     return 0;
 
 err_kcqs:
@@ -862,24 +859,6 @@ static void kyber_finish_request(struct request *rq)
     struct kyber_fairness *kf;
 
     rq_clear_domain_token(kqd, rq);
-
-    if (rq) {
-        if (rq->bio) {
-            if (rq->bio->bi_blkg) {
-                kf = blkg_to_kf(rq->bio->bi_blkg);
-                spin_lock(&kf->lock);
-                kf->budget += blk_rq_sectors(rq);
-                printk("[finish]budget: %d -> %d\n", kf->budget+blk_rq_sectors(rq), kf->budget);
-                spin_unlock(&kf->lock);
-            } else {
-                printk("[finish]no blkg\n");
-            }
-        } else {
-            printk("[finish]no bio\n");
-        }
-    } else {
-        printk("[finish]no rq\n");
-    }
 }
 
 static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
@@ -920,6 +899,24 @@ static void kyber_completed_request(struct request *rq, u64 now)
     put_cpu_ptr(kqd->cpu_latency);
 
     timer_reduce(&kqd->timer, jiffies + HZ / 10);
+
+    if (rq) {
+        if (rq->bio) {
+            if (rq->bio->bi_blkg) {
+                kf = blkg_to_kf(rq->bio->bi_blkg);
+                spin_lock(&kf->lock);
+                kf->budget += blk_rq_sectors(rq);
+                printk("[finish]budget: %d -> %d\n", kf->budget+blk_rq_sectors(rq), kf->budget);
+                spin_unlock(&kf->lock);
+            } else {
+                printk("[finish]no blkg\n");
+            }
+        } else {
+            printk("[finish]no bio\n");
+        }
+    } else {
+        printk("[finish]no rq\n");
+    }
 }
 
 struct flush_kcq_data {
@@ -1147,7 +1144,6 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 
     spin_lock(&khd->lock);
 
-    printk("select cgroup_id\n");
     cgroup_id = kyber_choose_cgroup(hctx);
     printk("[%d] selected cgroup_id\n", cgroup_id);
 
