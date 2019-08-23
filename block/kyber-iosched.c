@@ -748,6 +748,9 @@ static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
     sbitmap_queue_min_shallow_depth(&hctx->sched_tags->bitmap_tags,
             kqd->async_depth);
 
+    printk("init hctx\n");
+    printk("-ERANGE: %d\n", -ERANGE);
+
     return 0;
 
 err_kcqs:
@@ -877,7 +880,6 @@ static void kyber_finish_request(struct request *rq)
     } else {
         printk("[finish]no rq\n");
     }
-
 }
 
 static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
@@ -1123,10 +1125,12 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
                 css = css_from_id(id, &io_cgrp_subsys);
                 rcu_read_unlock();
 
-                /* NEVER kf can be NULL */
+                /* NEVER kf can't be NULL */
                 kf = css_to_kf(css, q);
                 if (kf->budget > 0)
                     return id;
+            default:
+                break;
         }
     }
 
@@ -1142,8 +1146,9 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
     int i, cgroup_id;
 
     spin_lock(&khd->lock);
-    cgroup_id = kyber_choose_cgroup(hctx);
 
+    printk("select cgroup_id\n");
+    cgroup_id = kyber_choose_cgroup(hctx);
     printk("[%d] selected cgroup_id\n", cgroup_id);
 
     if (!cgroup_id)
@@ -1198,6 +1203,8 @@ static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
                 return false;
             case 1:
                 return true;
+            default:
+                break;
         }
     }
 
