@@ -33,27 +33,27 @@
  * request type.
  */
 enum {
-	KYBER_READ,
-	KYBER_WRITE,
-	KYBER_DISCARD,
-	KYBER_OTHER,
-	KYBER_NUM_DOMAINS,
+    KYBER_READ,
+    KYBER_WRITE,
+    KYBER_DISCARD,
+    KYBER_OTHER,
+    KYBER_NUM_DOMAINS,
 };
 
 static const char *kyber_domain_names[] = {
-	[KYBER_READ] = "READ",
-	[KYBER_WRITE] = "WRITE",
-	[KYBER_DISCARD] = "DISCARD",
-	[KYBER_OTHER] = "OTHER",
+    [KYBER_READ] = "READ",
+    [KYBER_WRITE] = "WRITE",
+    [KYBER_DISCARD] = "DISCARD",
+    [KYBER_OTHER] = "OTHER",
 };
 
 enum {
-	/*
-	 * In order to prevent starvation of synchronous requests by a flood of
-	 * asynchronous requests, we reserve 25% of requests for synchronous
-	 * operations.
-	 */
-	KYBER_ASYNC_PERCENT = 75,
+    /*
+     * In order to prevent starvation of synchronous requests by a flood of
+     * asynchronous requests, we reserve 25% of requests for synchronous
+     * operations.
+     */
+    KYBER_ASYNC_PERCENT = 75,
 };
 
 /*
@@ -64,19 +64,19 @@ enum {
  * these to a reasonable value.
  */
 static const unsigned int kyber_depth[] = {
-	[KYBER_READ] = 256,
-	[KYBER_WRITE] = 128,
-	[KYBER_DISCARD] = 64,
-	[KYBER_OTHER] = 16,
+    [KYBER_READ] = 256,
+    [KYBER_WRITE] = 128,
+    [KYBER_DISCARD] = 64,
+    [KYBER_OTHER] = 16,
 };
 
 /*
  * Default latency targets for each scheduling domain.
  */
 static const u64 kyber_latency_targets[] = {
-	[KYBER_READ] = 2ULL * NSEC_PER_MSEC,
-	[KYBER_WRITE] = 10ULL * NSEC_PER_MSEC,
-	[KYBER_DISCARD] = 5ULL * NSEC_PER_SEC,
+    [KYBER_READ] = 2ULL * NSEC_PER_MSEC,
+    [KYBER_WRITE] = 10ULL * NSEC_PER_MSEC,
+    [KYBER_DISCARD] = 5ULL * NSEC_PER_SEC,
 };
 
 /*
@@ -84,10 +84,10 @@ static const u64 kyber_latency_targets[] = {
  * domain.
  */
 static const unsigned int kyber_batch_size[] = {
-	[KYBER_READ] = 16,
-	[KYBER_WRITE] = 8,
-	[KYBER_DISCARD] = 1,
-	[KYBER_OTHER] = 1,
+    [KYBER_READ] = 16,
+    [KYBER_WRITE] = 8,
+    [KYBER_DISCARD] = 1,
+    [KYBER_OTHER] = 1,
 };
 
 /*
@@ -104,18 +104,18 @@ static const unsigned int kyber_batch_size[] = {
  * > 1 3/4 * target latency
  */
 enum {
-	/*
-	 * The width of the latency histogram buckets is
-	 * 1 / (1 << KYBER_LATENCY_SHIFT) * target latency.
-	 */
-	KYBER_LATENCY_SHIFT = 2,
-	/*
-	 * The first (1 << KYBER_LATENCY_SHIFT) buckets are <= target latency,
-	 * thus, "good".
-	 */
-	KYBER_GOOD_BUCKETS = 1 << KYBER_LATENCY_SHIFT,
-	/* There are also (1 << KYBER_LATENCY_SHIFT) "bad" buckets. */
-	KYBER_LATENCY_BUCKETS = 2 << KYBER_LATENCY_SHIFT,
+    /*
+     * The width of the latency histogram buckets is
+     * 1 / (1 << KYBER_LATENCY_SHIFT) * target latency.
+     */
+    KYBER_LATENCY_SHIFT = 2,
+    /*
+     * The first (1 << KYBER_LATENCY_SHIFT) buckets are <= target latency,
+     * thus, "good".
+     */
+    KYBER_GOOD_BUCKETS = 1 << KYBER_LATENCY_SHIFT,
+    /* There are also (1 << KYBER_LATENCY_SHIFT) "bad" buckets. */
+    KYBER_LATENCY_BUCKETS = 2 << KYBER_LATENCY_SHIFT,
 };
 
 /*
@@ -123,13 +123,13 @@ enum {
  * submitting to the device).
  */
 enum {
-	KYBER_TOTAL_LATENCY,
-	KYBER_IO_LATENCY,
+    KYBER_TOTAL_LATENCY,
+    KYBER_IO_LATENCY,
 };
 
 static const char *kyber_latency_type_names[] = {
-	[KYBER_TOTAL_LATENCY] = "total",
-	[KYBER_IO_LATENCY] = "I/O",
+    [KYBER_TOTAL_LATENCY] = "total",
+    [KYBER_IO_LATENCY] = "I/O",
 };
 
 /*
@@ -137,7 +137,7 @@ static const char *kyber_latency_type_names[] = {
  * domain except for KYBER_OTHER.
  */
 struct kyber_cpu_latency {
-	atomic_t buckets[KYBER_OTHER][2][KYBER_LATENCY_BUCKETS];
+    atomic_t buckets[KYBER_OTHER][2][KYBER_LATENCY_BUCKETS];
 };
 
 /*
@@ -145,282 +145,273 @@ struct kyber_cpu_latency {
  * we use request->mq_ctx->index_hw to index the kcq in khd.
  */
 struct kyber_ctx_queue {
-	/*
-	 * Used to ensure operations on rq_list and kcq_map to be an atmoic one.
-	 * Also protect the rqs on rq_list when merge.
-	 */
-	spinlock_t lock;
-	struct list_head rq_list[KYBER_MAX_CGROUP][KYBER_NUM_DOMAINS];
+    /*
+     * Used to ensure operations on rq_list and kcq_map to be an atmoic one.
+     * Also protect the rqs on rq_list when merge.
+     */
+    spinlock_t lock;
+    struct list_head rq_list[KYBER_MAX_CGROUP][KYBER_NUM_DOMAINS];
 } ____cacheline_aligned_in_smp;
 
 struct kyber_queue_data {
-	struct request_queue *q;
+    struct request_queue *q;
 
-	/*
-	 * Each scheduling domain has a limited number of in-flight requests
-	 * device-wide, limited by these tokens.
-	 */
-	struct sbitmap_queue domain_tokens[KYBER_NUM_DOMAINS];
+    /*
+     * Each scheduling domain has a limited number of in-flight requests
+     * device-wide, limited by these tokens.
+     */
+    struct sbitmap_queue domain_tokens[KYBER_NUM_DOMAINS];
 
-	/*
-	 * Async request percentage, converted to per-word depth for
-	 * sbitmap_get_shallow().
-	 */
-	unsigned int async_depth;
+    /*
+     * Async request percentage, converted to per-word depth for
+     * sbitmap_get_shallow().
+     */
+    unsigned int async_depth;
 
-	struct kyber_cpu_latency __percpu *cpu_latency;
+    struct kyber_cpu_latency __percpu *cpu_latency;
 
-	/* Timer for stats aggregation and adjusting domain tokens. */
-	struct timer_list timer;
+    /* Timer for stats aggregation and adjusting domain tokens. */
+    struct timer_list timer;
 
-	unsigned int latency_buckets[KYBER_OTHER][2][KYBER_LATENCY_BUCKETS];
+    unsigned int latency_buckets[KYBER_OTHER][2][KYBER_LATENCY_BUCKETS];
 
-	unsigned long latency_timeout[KYBER_OTHER];
+    unsigned long latency_timeout[KYBER_OTHER];
 
-	int domain_p99[KYBER_OTHER];
+    int domain_p99[KYBER_OTHER];
 
-	/* Target latencies in nanoseconds. */
-	u64 latency_targets[KYBER_OTHER];
+    /* Target latencies in nanoseconds. */
+    u64 latency_targets[KYBER_OTHER];
 };
 
 struct kyber_hctx_data {
-	spinlock_t lock;
-	struct list_head rqs[KYBER_MAX_CGROUP][KYBER_NUM_DOMAINS];
-	unsigned int cur_domain;
-	unsigned int batching;
-	struct kyber_ctx_queue *kcqs;
-	struct sbitmap kcq_map[KYBER_MAX_CGROUP][KYBER_NUM_DOMAINS];
-	struct sbq_wait domain_wait[KYBER_NUM_DOMAINS];
-	struct sbq_wait_state *domain_ws[KYBER_NUM_DOMAINS];
-	atomic_t wait_index[KYBER_NUM_DOMAINS];
+    spinlock_t lock;
+    struct list_head rqs[KYBER_MAX_CGROUP][KYBER_NUM_DOMAINS];
+    unsigned int cur_domain;
+    unsigned int batching;
+    struct kyber_ctx_queue *kcqs;
+    struct sbitmap kcq_map[KYBER_MAX_CGROUP][KYBER_NUM_DOMAINS];
+    struct sbq_wait domain_wait[KYBER_NUM_DOMAINS];
+    struct sbq_wait_state *domain_ws[KYBER_NUM_DOMAINS];
+    atomic_t wait_index[KYBER_NUM_DOMAINS];
 };
 
 struct kyber_fairness {
-	struct blkg_policy_data pd;
-	int budget;
-	bool idle;
-	spinlock_t lock;
+    struct blkg_policy_data pd;
+    int budget;
+    spinlock_t lock;
 };
 
 struct kyber_fairness_data {
-	struct blkcg_policy_data pd;
-	unsigned int weight;
+    struct blkcg_policy_data pd;
+    unsigned int weight;
 };
 
 static struct blkcg_policy blkcg_policy_kyber;
 
 static struct kyber_fairness_data *cpd_to_kfd(struct blkcg_policy_data *cpd)
 {
-	return cpd ? container_of(cpd, struct kyber_fairness_data, pd) : NULL;
+    return cpd ? container_of(cpd, struct kyber_fairness_data, pd) : NULL;
 }
 
 static struct kyber_fairness_data *blkcg_to_kfd(struct blkcg *blkcg)
 {
-	return cpd_to_kfd(blkcg_to_cpd(blkcg, &blkcg_policy_kyber));
+    return cpd_to_kfd(blkcg_to_cpd(blkcg, &blkcg_policy_kyber));
 }
 
 static struct kyber_fairness *pd_to_kf(struct blkg_policy_data *pd)
 {
-	return pd ? container_of(pd, struct kyber_fairness, pd) : NULL;
+    return pd ? container_of(pd, struct kyber_fairness, pd) : NULL;
 }
 
 struct blkcg_gq *kf_to_blkg(struct kyber_fairness *kf)
 {
-	return pd_to_blkg(&kf->pd);
+    return pd_to_blkg(&kf->pd);
 }
 
 static struct kyber_fairness *blkg_to_kf(struct blkcg_gq *blkg)
 {
-	return pd_to_kf(blkg_to_pd(blkg, &blkcg_policy_kyber));
+    return pd_to_kf(blkg_to_pd(blkg, &blkcg_policy_kyber));
 }
 
 static int bio_to_css_id(struct bio *bio)
 {
-	return bio->bi_blkg->blkcg->css.id;
+    return bio->bi_blkg->blkcg->css.id;
 }
 
 static struct kyber_fairness *css_to_kf(struct cgroup_subsys_state *css, struct request_queue *q)
 {
-	struct blkcg *blkcg;
-	struct blkcg_gq *blkg;
-	struct kyber_fairness *kf;
+    struct blkcg *blkcg;
+    struct blkcg_gq *blkg;
+    struct kyber_fairness *kf;
 
-	if (!css)
-		return NULL;
+    if (!css)
+        return NULL;
 
-	blkcg = css_to_blkcg(css);
-	blkg = blkg_lookup_create(blkcg, q);
-	kf = blkg_to_kf(blkg);
+    blkcg = css_to_blkcg(css);
+    blkg = blkg_lookup_create(blkcg, q);
+    kf = blkg_to_kf(blkg);
 
-	return kf;
+    return kf;
 }
 
 static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
-		struct cftype *cftype,
-		u64 val)
+        struct cftype *cftype,
+        u64 val)
 {
-	struct blkcg *blkcg;
-	struct kyber_fairness_data *kfd;
-	int ret = -ERANGE;
+    struct blkcg *blkcg;
+    struct kyber_fairness_data *kfd;
+    int ret = -ERANGE;
 
-	if (val < KYBER_MIN_WEIGHT || val > KYBER_MAX_WEIGHT)
-		return ret;
+    if (val < KYBER_MIN_WEIGHT || val > KYBER_MAX_WEIGHT)
+        return ret;
 
-	ret = 0;
+    ret = 0;
 
-	blkcg = css_to_blkcg(css);
-	kfd = blkcg_to_kfd(blkcg);
+    blkcg = css_to_blkcg(css);
+    kfd = blkcg_to_kfd(blkcg);
 
-	kfd->weight = (unsigned int)val;
+    kfd->weight = (unsigned int)val;
 
-	return ret;
+    return ret;
 }
 
 static ssize_t kyber_io_set_weight(struct kernfs_open_file *of,
-				 char *buf, size_t nbytes,
-				 loff_t off)
+        char *buf, size_t nbytes,
+        loff_t off)
 {
-	u64 weight;
-	/* First unsigned long found in the file is used */
-	int ret = kstrtoull(strim(buf), 0, &weight);
+    u64 weight;
+    /* First unsigned long found in the file is used */
+    int ret = kstrtoull(strim(buf), 0, &weight);
 
-	if (ret)
-		return ret;
+    if (ret)
+        return ret;
 
-	ret = kyber_io_set_weight_legacy(of_css(of), NULL, weight);
-	return ret ?: nbytes;
+    ret = kyber_io_set_weight_legacy(of_css(of), NULL, weight);
+    return ret ?: nbytes;
 }
 
 static int kyber_io_show_weight(struct seq_file *sf, void *v)
 {
-	struct blkcg *blkcg = css_to_blkcg(seq_css(sf));
-	struct kyber_fairness_data *kfd = blkcg_to_kfd(blkcg);
-	unsigned int val = 0;
+    struct blkcg *blkcg = css_to_blkcg(seq_css(sf));
+    struct kyber_fairness_data *kfd = blkcg_to_kfd(blkcg);
+    unsigned int val = 0;
 
-	if (blkcg)
-		val = kfd->weight;
+    if (blkcg)
+        val = kfd->weight;
 
-	seq_printf(sf, "%u\n", val);
+    seq_printf(sf, "%u\n", val);
 
-	return 0;
+    return 0;
 }
 
 static struct cftype kyber_blkg_files[] = {
-	{
-		.name = "kyber.weight",
-		.flags = CFTYPE_NOT_ON_ROOT,
-		.seq_show = kyber_io_show_weight,
-		.write = kyber_io_set_weight,
-	},
-	{} /* terminate */
+    {
+        .name = "kyber.weight",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = kyber_io_show_weight,
+        .write = kyber_io_set_weight,
+    },
+    {} /* terminate */
 };
 
 static struct cftype kyber_blkcg_legacy_files[] = {
-	{
-		.name = "kyber.weight",
-		.flags = CFTYPE_NOT_ON_ROOT,
-		.seq_show = kyber_io_show_weight,
-		.write_u64 = kyber_io_set_weight_legacy,
-	},
-	{} /* terminate */
+    {
+        .name = "kyber.weight",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = kyber_io_show_weight,
+        .write_u64 = kyber_io_set_weight_legacy,
+    },
+    {} /* terminate */
 };
 
 static struct blkcg_policy_data *kyber_cpd_alloc(gfp_t gfp)
 {
-	struct kyber_fairness_data *kfd;
+    struct kyber_fairness_data *kfd;
 
-	kfd = kzalloc(sizeof(*kfd), gfp);
-	if (!kfd)
-		return NULL;
+    kfd = kzalloc(sizeof(*kfd), gfp);
+    if (!kfd)
+        return NULL;
 
-	return &kfd->pd;
+    return &kfd->pd;
 }
 
 static void kyber_cpd_init(struct blkcg_policy_data *cpd)
 {
-	struct kyber_fairness_data *kfd = cpd_to_kfd(cpd);
+    struct kyber_fairness_data *kfd = cpd_to_kfd(cpd);
 
-	kfd->weight = cgroup_subsys_on_dfl(io_cgrp_subsys) ?
-		CGROUP_WEIGHT_DFL : KYBER_WEIGHT_LEGACY_DFL;
+    kfd->weight = cgroup_subsys_on_dfl(io_cgrp_subsys) ?
+        CGROUP_WEIGHT_DFL : KYBER_WEIGHT_LEGACY_DFL;
 }
 
 static void kyber_cpd_free(struct blkcg_policy_data *cpd)
 {
-	kfree(cpd_to_kfd(cpd));
+    kfree(cpd_to_kfd(cpd));
 }
 
 static struct blkg_policy_data *kyber_pd_alloc(gfp_t gfp, int node)
 {
-	struct kyber_fairness *kf;
+    struct kyber_fairness *kf;
 
-	kf = kzalloc_node(sizeof(*kf), gfp, node);
-	if (!kf)
-		return NULL;
+    kf = kzalloc_node(sizeof(*kf), gfp, node);
+    if (!kf)
+        return NULL;
 
-	return &kf->pd;	
+    return &kf->pd;	
 }
 
 static void kyber_pd_init(struct blkg_policy_data *pd)
 {
-	struct blkcg_gq *blkg = pd_to_blkg(pd);
-	struct kyber_fairness *kf = pd_to_kf(pd);
-	struct kyber_fairness_data *kfd = blkcg_to_kfd(blkg->blkcg);
+    struct blkcg_gq *blkg = pd_to_blkg(pd);
+    struct kyber_fairness *kf = pd_to_kf(pd);
+    struct kyber_fairness_data *kfd = blkcg_to_kfd(blkg->blkcg);
 
-	kf->budget = kfd->weight * 10;
-	kf->idle = true;
-	spin_lock_init(&kf->lock);
-}
-
-static void kyber_pd_offline(struct blkg_policy_data *pd)
-{
-	// TODO implement
-	printk("pd offline !\n");
+    kf->budget = kfd->weight * 10;
+    spin_lock_init(&kf->lock);
 }
 
 static void kyber_pd_free(struct blkg_policy_data *pd)
 {
-	kfree(pd_to_kf(pd));
+    kfree(pd_to_kf(pd));
 }
 
 static struct blkcg_policy blkcg_policy_kyber = {
-	.dfl_cftypes		= kyber_blkg_files,
-	.legacy_cftypes		= kyber_blkcg_legacy_files,
+    .dfl_cftypes		= kyber_blkg_files,
+    .legacy_cftypes		= kyber_blkcg_legacy_files,
 
-	.cpd_alloc_fn		= kyber_cpd_alloc,
-	.cpd_init_fn		= kyber_cpd_init,
-	.cpd_bind_fn		= kyber_cpd_init,
-	.cpd_free_fn		= kyber_cpd_free,
+    .cpd_alloc_fn		= kyber_cpd_alloc,
+    .cpd_init_fn		= kyber_cpd_init,
+    .cpd_bind_fn		= kyber_cpd_init,
+    .cpd_free_fn		= kyber_cpd_free,
 
-	.pd_alloc_fn		= kyber_pd_alloc,
-	.pd_init_fn			= kyber_pd_init,
-	.pd_offline_fn		= kyber_pd_offline,
-	.pd_free_fn			= kyber_pd_free,
+    .pd_alloc_fn		= kyber_pd_alloc,
+    .pd_init_fn			= kyber_pd_init,
+    .pd_free_fn			= kyber_pd_free,
 };
 
 static unsigned int kyber_sched_domain(unsigned int op)
 {
-	switch (op & REQ_OP_MASK) {
-	case REQ_OP_READ:
-		return KYBER_READ;
-	case REQ_OP_WRITE:
-		return KYBER_WRITE;
-	case REQ_OP_DISCARD:
-		return KYBER_DISCARD;
-	default:
-		return KYBER_OTHER;
-	}
+    switch (op & REQ_OP_MASK) {
+        case REQ_OP_READ:
+            return KYBER_READ;
+        case REQ_OP_WRITE:
+            return KYBER_WRITE;
+        case REQ_OP_DISCARD:
+            return KYBER_DISCARD;
+        default:
+            return KYBER_OTHER;
+    }
 }
 
 static void flush_latency_buckets(struct kyber_queue_data *kqd,
-				  struct kyber_cpu_latency *cpu_latency,
-				  unsigned int sched_domain, unsigned int type)
+        struct kyber_cpu_latency *cpu_latency,
+        unsigned int sched_domain, unsigned int type)
 {
-	unsigned int *buckets = kqd->latency_buckets[sched_domain][type];
-	atomic_t *cpu_buckets = cpu_latency->buckets[sched_domain][type];
-	unsigned int bucket;
+    unsigned int *buckets = kqd->latency_buckets[sched_domain][type];
+    atomic_t *cpu_buckets = cpu_latency->buckets[sched_domain][type];
+    unsigned int bucket;
 
-	for (bucket = 0; bucket < KYBER_LATENCY_BUCKETS; bucket++)
-		buckets[bucket] += atomic_xchg(&cpu_buckets[bucket], 0);
+    for (bucket = 0; bucket < KYBER_LATENCY_BUCKETS; bucket++)
+        buckets[bucket] += atomic_xchg(&cpu_buckets[bucket], 0);
 }
 
 /*
@@ -428,799 +419,814 @@ static void flush_latency_buckets(struct kyber_queue_data *kqd,
  * aren't enough samples yet.
  */
 static int calculate_percentile(struct kyber_queue_data *kqd,
-				unsigned int sched_domain, unsigned int type,
-				unsigned int percentile)
+        unsigned int sched_domain, unsigned int type,
+        unsigned int percentile)
 {
-	unsigned int *buckets = kqd->latency_buckets[sched_domain][type];
-	unsigned int bucket, samples = 0, percentile_samples;
+    unsigned int *buckets = kqd->latency_buckets[sched_domain][type];
+    unsigned int bucket, samples = 0, percentile_samples;
 
-	for (bucket = 0; bucket < KYBER_LATENCY_BUCKETS; bucket++)
-		samples += buckets[bucket];
+    for (bucket = 0; bucket < KYBER_LATENCY_BUCKETS; bucket++)
+        samples += buckets[bucket];
 
-	if (!samples)
-		return -1;
+    if (!samples)
+        return -1;
 
-	/*
-	 * We do the calculation once we have 500 samples or one second passes
-	 * since the first sample was recorded, whichever comes first.
-	 */
-	if (!kqd->latency_timeout[sched_domain])
-		kqd->latency_timeout[sched_domain] = max(jiffies + HZ, 1UL);
-	if (samples < 500 &&
-	    time_is_after_jiffies(kqd->latency_timeout[sched_domain])) {
-		return -1;
-	}
-	kqd->latency_timeout[sched_domain] = 0;
+    /*
+     * We do the calculation once we have 500 samples or one second passes
+     * since the first sample was recorded, whichever comes first.
+     */
+    if (!kqd->latency_timeout[sched_domain])
+        kqd->latency_timeout[sched_domain] = max(jiffies + HZ, 1UL);
+    if (samples < 500 &&
+            time_is_after_jiffies(kqd->latency_timeout[sched_domain])) {
+        return -1;
+    }
+    kqd->latency_timeout[sched_domain] = 0;
 
-	percentile_samples = DIV_ROUND_UP(samples * percentile, 100);
-	for (bucket = 0; bucket < KYBER_LATENCY_BUCKETS - 1; bucket++) {
-		if (buckets[bucket] >= percentile_samples)
-			break;
-		percentile_samples -= buckets[bucket];
-	}
-	memset(buckets, 0, sizeof(kqd->latency_buckets[sched_domain][type]));
+    percentile_samples = DIV_ROUND_UP(samples * percentile, 100);
+    for (bucket = 0; bucket < KYBER_LATENCY_BUCKETS - 1; bucket++) {
+        if (buckets[bucket] >= percentile_samples)
+            break;
+        percentile_samples -= buckets[bucket];
+    }
+    memset(buckets, 0, sizeof(kqd->latency_buckets[sched_domain][type]));
 
-	trace_kyber_latency(kqd->q, kyber_domain_names[sched_domain],
-			    kyber_latency_type_names[type], percentile,
-			    bucket + 1, 1 << KYBER_LATENCY_SHIFT, samples);
+    trace_kyber_latency(kqd->q, kyber_domain_names[sched_domain],
+            kyber_latency_type_names[type], percentile,
+            bucket + 1, 1 << KYBER_LATENCY_SHIFT, samples);
 
-	return bucket;
+    return bucket;
 }
 
 static void kyber_resize_domain(struct kyber_queue_data *kqd,
-				unsigned int sched_domain, unsigned int depth)
+        unsigned int sched_domain, unsigned int depth)
 {
-	depth = clamp(depth, 1U, kyber_depth[sched_domain]);
-	if (depth != kqd->domain_tokens[sched_domain].sb.depth) {
-		sbitmap_queue_resize(&kqd->domain_tokens[sched_domain], depth);
-		trace_kyber_adjust(kqd->q, kyber_domain_names[sched_domain],
-				   depth);
-	}
+    depth = clamp(depth, 1U, kyber_depth[sched_domain]);
+    if (depth != kqd->domain_tokens[sched_domain].sb.depth) {
+        sbitmap_queue_resize(&kqd->domain_tokens[sched_domain], depth);
+        trace_kyber_adjust(kqd->q, kyber_domain_names[sched_domain],
+                depth);
+    }
 }
 
 static void kyber_refill_budget(struct request_queue *q, int size)
 {
-	struct cgroup_subsys_state *css;
-	struct kyber_fairness *kf;
-	struct kyber_fairness_data *kfd;
-	int id;
+    struct cgroup_subsys_state *css;
+    struct kyber_fairness *kf;
+    struct kyber_fairness_data *kfd;
+    int id;
 
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		rcu_read_lock();
-		css = css_from_id(id, &io_cgrp_subsys);
-		rcu_read_unlock();
-		
-		kf = css_to_kf(css, q);
-		if (!kf)
-			return;
+    for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+        rcu_read_lock();
+        css = css_from_id(id, &io_cgrp_subsys);
+        rcu_read_unlock();
 
-		kfd = blkcg_to_kfd(css_to_blkcg(css));
+        kf = css_to_kf(css, q);
+        if (!kf)
+            return;
 
-		kf->budget = kfd->weight * size;
-	}
+        kfd = blkcg_to_kfd(css_to_blkcg(css));
+
+        kf->budget = kfd->weight * size;
+    }
 }
 
 static void kyber_timer_fn(struct timer_list *t)
 {
-	struct kyber_queue_data *kqd = from_timer(kqd, t, timer);
-	unsigned int sched_domain;
-	int cpu;
-	bool bad = false;
+    struct kyber_queue_data *kqd = from_timer(kqd, t, timer);
+    unsigned int sched_domain;
+    int cpu;
+    bool bad = false;
 
-	/* Sum all of the per-cpu latency histograms. */
-	for_each_online_cpu(cpu) {
-		struct kyber_cpu_latency *cpu_latency;
+    kyber_refill_budget(kqd->q, 10);
+    printk("refill\n");
 
-		cpu_latency = per_cpu_ptr(kqd->cpu_latency, cpu);
-		for (sched_domain = 0; sched_domain < KYBER_OTHER; sched_domain++) {
-			flush_latency_buckets(kqd, cpu_latency, sched_domain,
-					      KYBER_TOTAL_LATENCY);
-			flush_latency_buckets(kqd, cpu_latency, sched_domain,
-					      KYBER_IO_LATENCY);
-		}
-	}
+    /* Sum all of the per-cpu latency histograms. */
+    for_each_online_cpu(cpu) {
+        struct kyber_cpu_latency *cpu_latency;
 
-	/*
-	 * Check if any domains have a high I/O latency, which might indicate
-	 * congestion in the device. Note that we use the p90; we don't want to
-	 * be too sensitive to outliers here.
-	 */
-	for (sched_domain = 0; sched_domain < KYBER_OTHER; sched_domain++) {
-		int p90;
+        cpu_latency = per_cpu_ptr(kqd->cpu_latency, cpu);
+        for (sched_domain = 0; sched_domain < KYBER_OTHER; sched_domain++) {
+            flush_latency_buckets(kqd, cpu_latency, sched_domain,
+                    KYBER_TOTAL_LATENCY);
+            flush_latency_buckets(kqd, cpu_latency, sched_domain,
+                    KYBER_IO_LATENCY);
+        }
+    }
 
-		p90 = calculate_percentile(kqd, sched_domain, KYBER_IO_LATENCY,
-					   90);
-		if (p90 >= KYBER_GOOD_BUCKETS)
-			bad = true;
-	}
+    /*
+     * Check if any domains have a high I/O latency, which might indicate
+     * congestion in the device. Note that we use the p90; we don't want to
+     * be too sensitive to outliers here.
+     */
+    for (sched_domain = 0; sched_domain < KYBER_OTHER; sched_domain++) {
+        int p90;
 
-	/*
-	 * Adjust the scheduling domain depths. If we determined that there was
-	 * congestion, we throttle all domains with good latencies. Either way,
-	 * we ease up on throttling domains with bad latencies.
-	 */
-	for (sched_domain = 0; sched_domain < KYBER_OTHER; sched_domain++) {
-		unsigned int orig_depth, depth;
-		int p99;
+        p90 = calculate_percentile(kqd, sched_domain, KYBER_IO_LATENCY,
+                90);
+        if (p90 >= KYBER_GOOD_BUCKETS)
+            bad = true;
+    }
 
-		p99 = calculate_percentile(kqd, sched_domain,
-					   KYBER_TOTAL_LATENCY, 99);
-		/*
-		 * This is kind of subtle: different domains will not
-		 * necessarily have enough samples to calculate the latency
-		 * percentiles during the same window, so we have to remember
-		 * the p99 for the next time we observe congestion; once we do,
-		 * we don't want to throttle again until we get more data, so we
-		 * reset it to -1.
-		 */
-		if (bad) {
-			if (p99 < 0)
-				p99 = kqd->domain_p99[sched_domain];
-			kqd->domain_p99[sched_domain] = -1;
-		} else if (p99 >= 0) {
-			kqd->domain_p99[sched_domain] = p99;
-		}
-		if (p99 < 0)
-			continue;
+    /*
+     * Adjust the scheduling domain depths. If we determined that there was
+     * congestion, we throttle all domains with good latencies. Either way,
+     * we ease up on throttling domains with bad latencies.
+     */
+    for (sched_domain = 0; sched_domain < KYBER_OTHER; sched_domain++) {
+        unsigned int orig_depth, depth;
+        int p99;
 
-		/*
-		 * If this domain has bad latency, throttle less. Otherwise,
-		 * throttle more iff we determined that there is congestion.
-		 *
-		 * The new depth is scaled linearly with the p99 latency vs the
-		 * latency target. E.g., if the p99 is 3/4 of the target, then
-		 * we throttle down to 3/4 of the current depth, and if the p99
-		 * is 2x the target, then we double the depth.
-		 */
-		if (bad || p99 >= KYBER_GOOD_BUCKETS) {
-			orig_depth = kqd->domain_tokens[sched_domain].sb.depth;
-			depth = (orig_depth * (p99 + 1)) >> KYBER_LATENCY_SHIFT;
-			kyber_resize_domain(kqd, sched_domain, depth);
-		}
-	}
+        p99 = calculate_percentile(kqd, sched_domain,
+                KYBER_TOTAL_LATENCY, 99);
+        /*
+         * This is kind of subtle: different domains will not
+         * necessarily have enough samples to calculate the latency
+         * percentiles during the same window, so we have to remember
+         * the p99 for the next time we observe congestion; once we do,
+         * we don't want to throttle again until we get more data, so we
+         * reset it to -1.
+         */
+        if (bad) {
+            if (p99 < 0)
+                p99 = kqd->domain_p99[sched_domain];
+            kqd->domain_p99[sched_domain] = -1;
+        } else if (p99 >= 0) {
+            kqd->domain_p99[sched_domain] = p99;
+        }
+        if (p99 < 0)
+            continue;
+
+        /*
+         * If this domain has bad latency, throttle less. Otherwise,
+         * throttle more iff we determined that there is congestion.
+         *
+         * The new depth is scaled linearly with the p99 latency vs the
+         * latency target. E.g., if the p99 is 3/4 of the target, then
+         * we throttle down to 3/4 of the current depth, and if the p99
+         * is 2x the target, then we double the depth.
+         */
+        if (bad || p99 >= KYBER_GOOD_BUCKETS) {
+            orig_depth = kqd->domain_tokens[sched_domain].sb.depth;
+            depth = (orig_depth * (p99 + 1)) >> KYBER_LATENCY_SHIFT;
+            kyber_resize_domain(kqd, sched_domain, depth);
+        }
+    }
 }
 
 static unsigned int kyber_sched_tags_shift(struct request_queue *q)
 {
-	/*
-	 * All of the hardware queues have the same depth, so we can just grab
-	 * the shift of the first one.
-	 */
-	return q->queue_hw_ctx[0]->sched_tags->bitmap_tags.sb.shift;
+    /*
+     * All of the hardware queues have the same depth, so we can just grab
+     * the shift of the first one.
+     */
+    return q->queue_hw_ctx[0]->sched_tags->bitmap_tags.sb.shift;
 }
 
 static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 {
-	struct kyber_queue_data *kqd;
-	unsigned int shift;
-	int ret = -ENOMEM;
-	int i;
+    struct kyber_queue_data *kqd;
+    unsigned int shift;
+    int ret = -ENOMEM;
+    int i;
 
-	kqd = kzalloc_node(sizeof(*kqd), GFP_KERNEL, q->node);
-	if (!kqd)
-		goto err;
+    kqd = kzalloc_node(sizeof(*kqd), GFP_KERNEL, q->node);
+    if (!kqd)
+        goto err;
 
-	kqd->q = q;
+    kqd->q = q;
 
-	kqd->cpu_latency = alloc_percpu_gfp(struct kyber_cpu_latency,
-					    GFP_KERNEL | __GFP_ZERO);
-	if (!kqd->cpu_latency)
-		goto err_kqd;
+    kqd->cpu_latency = alloc_percpu_gfp(struct kyber_cpu_latency,
+            GFP_KERNEL | __GFP_ZERO);
+    if (!kqd->cpu_latency)
+        goto err_kqd;
 
-	timer_setup(&kqd->timer, kyber_timer_fn, 0);
+    timer_setup(&kqd->timer, kyber_timer_fn, 0);
 
-	for (i = 0; i < KYBER_NUM_DOMAINS; i++) {
-		WARN_ON(!kyber_depth[i]);
-		WARN_ON(!kyber_batch_size[i]);
-		ret = sbitmap_queue_init_node(&kqd->domain_tokens[i],
-					      kyber_depth[i], -1, false,
-					      GFP_KERNEL, q->node);
-		if (ret) {
-			while (--i >= 0)
-				sbitmap_queue_free(&kqd->domain_tokens[i]);
-			goto err_buckets;
-		}
-	}
+    for (i = 0; i < KYBER_NUM_DOMAINS; i++) {
+        WARN_ON(!kyber_depth[i]);
+        WARN_ON(!kyber_batch_size[i]);
+        ret = sbitmap_queue_init_node(&kqd->domain_tokens[i],
+                kyber_depth[i], -1, false,
+                GFP_KERNEL, q->node);
+        if (ret) {
+            while (--i >= 0)
+                sbitmap_queue_free(&kqd->domain_tokens[i]);
+            goto err_buckets;
+        }
+    }
 
-	for (i = 0; i < KYBER_OTHER; i++) {
-		kqd->domain_p99[i] = -1;
-		kqd->latency_targets[i] = kyber_latency_targets[i];
-	}
+    for (i = 0; i < KYBER_OTHER; i++) {
+        kqd->domain_p99[i] = -1;
+        kqd->latency_targets[i] = kyber_latency_targets[i];
+    }
 
-	shift = kyber_sched_tags_shift(q);
-	kqd->async_depth = (1U << shift) * KYBER_ASYNC_PERCENT / 100U;
+    shift = kyber_sched_tags_shift(q);
+    kqd->async_depth = (1U << shift) * KYBER_ASYNC_PERCENT / 100U;
 
-	return kqd;
+    return kqd;
 
 err_buckets:
-	free_percpu(kqd->cpu_latency);
+    free_percpu(kqd->cpu_latency);
 err_kqd:
-	kfree(kqd);
+    kfree(kqd);
 err:
-	return ERR_PTR(ret);
+    return ERR_PTR(ret);
 }
 
 static int kyber_init_sched(struct request_queue *q, struct elevator_type *e)
 {
-	struct kyber_queue_data *kqd;
-	struct elevator_queue *eq;
-	int ret;
+    struct kyber_queue_data *kqd;
+    struct elevator_queue *eq;
+    int ret;
 
-	eq = elevator_alloc(q, e);
-	if (!eq)
-		return -ENOMEM;
+    eq = elevator_alloc(q, e);
+    if (!eq)
+        return -ENOMEM;
 
-	kqd = kyber_queue_data_alloc(q);
-	if (IS_ERR(kqd)) {
-		kobject_put(&eq->kobj);
-		return PTR_ERR(kqd);
-	}
+    kqd = kyber_queue_data_alloc(q);
+    if (IS_ERR(kqd)) {
+        kobject_put(&eq->kobj);
+        return PTR_ERR(kqd);
+    }
 
-	blk_stat_enable_accounting(q);
+    blk_stat_enable_accounting(q);
 
-	eq->elevator_data = kqd;
-	q->elevator = eq;
+    eq->elevator_data = kqd;
+    q->elevator = eq;
 
-	ret = blkcg_activate_policy(q, &blkcg_policy_kyber);
-	if (ret) {
-		kfree(kqd);
-		kobject_put(&eq->kobj);
-		return ret;
-	}
+    ret = blkcg_activate_policy(q, &blkcg_policy_kyber);
+    if (ret) {
+        kfree(kqd);
+        kobject_put(&eq->kobj);
+        return ret;
+    }
 
-	return 0;
+    return 0;
 }
 
 static void kyber_exit_sched(struct elevator_queue *e)
 {
-	struct kyber_queue_data *kqd = e->elevator_data;
-	int i;
+    struct kyber_queue_data *kqd = e->elevator_data;
+    int i;
 
-	del_timer_sync(&kqd->timer);
+    del_timer_sync(&kqd->timer);
 
-	for (i = 0; i < KYBER_NUM_DOMAINS; i++)
-		sbitmap_queue_free(&kqd->domain_tokens[i]);
-	free_percpu(kqd->cpu_latency);
-	kfree(kqd);
+    for (i = 0; i < KYBER_NUM_DOMAINS; i++)
+        sbitmap_queue_free(&kqd->domain_tokens[i]);
+    free_percpu(kqd->cpu_latency);
+    kfree(kqd);
 
-	blkcg_deactivate_policy(kqd->q, &blkcg_policy_kyber);
+    blkcg_deactivate_policy(kqd->q, &blkcg_policy_kyber);
 }
 
 static void kyber_ctx_queue_init(struct kyber_ctx_queue *kcq)
 {
-	unsigned int i, j;
+    unsigned int i, j;
 
-	spin_lock_init(&kcq->lock);
+    spin_lock_init(&kcq->lock);
 
-	for (i = 1; i < KYBER_MAX_CGROUP; i++)
-		for (j = 0; j < KYBER_NUM_DOMAINS; j++)
-			INIT_LIST_HEAD(&kcq->rq_list[i][j]);
+    for (i = 1; i < KYBER_MAX_CGROUP; i++)
+        for (j = 0; j < KYBER_NUM_DOMAINS; j++)
+            INIT_LIST_HEAD(&kcq->rq_list[i][j]);
 }
 
 static int kyber_domain_wake(wait_queue_entry_t *wait, unsigned mode, int flags,
-			     void *key);
+        void *key);
 
 static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
 {
-	struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
-	struct kyber_hctx_data *khd;
-	int i, j;
+    struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
+    struct kyber_hctx_data *khd;
+    int i, j;
 
-	khd = kmalloc_node(sizeof(*khd), GFP_KERNEL, hctx->numa_node);
-	if (!khd)
-		return -ENOMEM;
+    khd = kmalloc_node(sizeof(*khd), GFP_KERNEL, hctx->numa_node);
+    if (!khd)
+        return -ENOMEM;
 
-	khd->kcqs = kmalloc_array_node(hctx->nr_ctx,
-				       sizeof(struct kyber_ctx_queue),
-				       GFP_KERNEL, hctx->numa_node);
-	if (!khd->kcqs)
-		goto err_khd;
+    khd->kcqs = kmalloc_array_node(hctx->nr_ctx,
+            sizeof(struct kyber_ctx_queue),
+            GFP_KERNEL, hctx->numa_node);
+    if (!khd->kcqs)
+        goto err_khd;
 
-	for (i = 0; i < hctx->nr_ctx; i++)
-		kyber_ctx_queue_init(&khd->kcqs[i]);
+    for (i = 0; i < hctx->nr_ctx; i++)
+        kyber_ctx_queue_init(&khd->kcqs[i]);
 
-	for (i = 1; i < KYBER_MAX_CGROUP; i++) {
-		for (j = 0; j < KYBER_NUM_DOMAINS; j++) {
-			INIT_LIST_HEAD(&khd->rqs[i][j]);
+    for (i = 1; i < KYBER_MAX_CGROUP; i++) {
+        for (j = 0; j < KYBER_NUM_DOMAINS; j++) {
+            INIT_LIST_HEAD(&khd->rqs[i][j]);
 
-			if (sbitmap_init_node(&khd->kcq_map[i][j], hctx->nr_ctx,
-					      ilog2(8), GFP_KERNEL, hctx->numa_node)) {
-				do {
-					while (--j >= 0)
-						sbitmap_free(&khd->kcq_map[i][j]);
-					j = KYBER_NUM_DOMAINS;
-				} while (--i >= 1);
-				
-				goto err_kcqs;
-			}
-		}
-	}
+            if (sbitmap_init_node(&khd->kcq_map[i][j], hctx->nr_ctx,
+                        ilog2(8), GFP_KERNEL, hctx->numa_node)) {
+                do {
+                    while (--j >= 0)
+                        sbitmap_free(&khd->kcq_map[i][j]);
+                    j = KYBER_NUM_DOMAINS;
+                } while (--i >= 1);
 
-	spin_lock_init(&khd->lock);
+                goto err_kcqs;
+            }
+        }
+    }
 
-	for (i = 0; i < KYBER_NUM_DOMAINS; i++) {
-		khd->domain_wait[i].sbq = NULL;
-		init_waitqueue_func_entry(&khd->domain_wait[i].wait,
-					  kyber_domain_wake);
-		khd->domain_wait[i].wait.private = hctx;
-		INIT_LIST_HEAD(&khd->domain_wait[i].wait.entry);
-		atomic_set(&khd->wait_index[i], 0);
-	}
+    spin_lock_init(&khd->lock);
 
-	khd->cur_domain = 0;
-	khd->batching = 0;
+    for (i = 0; i < KYBER_NUM_DOMAINS; i++) {
+        khd->domain_wait[i].sbq = NULL;
+        init_waitqueue_func_entry(&khd->domain_wait[i].wait,
+                kyber_domain_wake);
+        khd->domain_wait[i].wait.private = hctx;
+        INIT_LIST_HEAD(&khd->domain_wait[i].wait.entry);
+        atomic_set(&khd->wait_index[i], 0);
+    }
 
-	hctx->sched_data = khd;
-	sbitmap_queue_min_shallow_depth(&hctx->sched_tags->bitmap_tags,
-					kqd->async_depth);
+    khd->cur_domain = 0;
+    khd->batching = 0;
 
-	return 0;
+    hctx->sched_data = khd;
+    sbitmap_queue_min_shallow_depth(&hctx->sched_tags->bitmap_tags,
+            kqd->async_depth);
+
+    return 0;
 
 err_kcqs:
-	kfree(khd->kcqs);
+    kfree(khd->kcqs);
 err_khd:
-	kfree(khd);
-	return -ENOMEM;
+    kfree(khd);
+    return -ENOMEM;
 }
 
 static void kyber_exit_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
 {
-	struct kyber_hctx_data *khd = hctx->sched_data;
-	int i, j;
+    struct kyber_hctx_data *khd = hctx->sched_data;
+    int i, j;
 
-	for (i = 1; i < KYBER_MAX_CGROUP; i++)
-		for (j = 0; j < KYBER_NUM_DOMAINS; j++)
-			sbitmap_free(&khd->kcq_map[i][j]);
+    for (i = 1; i < KYBER_MAX_CGROUP; i++)
+        for (j = 0; j < KYBER_NUM_DOMAINS; j++)
+            sbitmap_free(&khd->kcq_map[i][j]);
 
-	kfree(khd->kcqs);
-	kfree(hctx->sched_data);
+    kfree(khd->kcqs);
+    kfree(hctx->sched_data);
 }
 
 static int rq_get_domain_token(struct request *rq)
 {
-	return (long)rq->elv.priv[0];
+    return (long)rq->elv.priv[0];
 }
 
 static void rq_set_domain_token(struct request *rq, int token)
 {
-	rq->elv.priv[0] = (void *)(long)token;
+    rq->elv.priv[0] = (void *)(long)token;
 }
 
 static void rq_clear_domain_token(struct kyber_queue_data *kqd,
-				  struct request *rq)
+        struct request *rq)
 {
-	unsigned int sched_domain;
-	int nr;
+    unsigned int sched_domain;
+    int nr;
 
-	nr = rq_get_domain_token(rq);
-	if (nr != -1) {
-		sched_domain = kyber_sched_domain(rq->cmd_flags);
-		sbitmap_queue_clear(&kqd->domain_tokens[sched_domain], nr,
-				    rq->mq_ctx->cpu);
-	}
+    nr = rq_get_domain_token(rq);
+    if (nr != -1) {
+        sched_domain = kyber_sched_domain(rq->cmd_flags);
+        sbitmap_queue_clear(&kqd->domain_tokens[sched_domain], nr,
+                rq->mq_ctx->cpu);
+    }
 }
 
 static void kyber_limit_depth(unsigned int op, struct blk_mq_alloc_data *data)
 {
-	/*
-	 * We use the scheduler tags as per-hardware queue queueing tokens.
-	 * Async requests can be limited at this stage.
-	 */
-	if (!op_is_sync(op)) {
-		struct kyber_queue_data *kqd = data->q->elevator->elevator_data;
+    /*
+     * We use the scheduler tags as per-hardware queue queueing tokens.
+     * Async requests can be limited at this stage.
+     */
+    if (!op_is_sync(op)) {
+        struct kyber_queue_data *kqd = data->q->elevator->elevator_data;
 
-		data->shallow_depth = kqd->async_depth;
-	}
+        data->shallow_depth = kqd->async_depth;
+    }
 }
 
 static bool kyber_bio_merge(struct blk_mq_hw_ctx *hctx, struct bio *bio)
 {
-	struct kyber_hctx_data *khd = hctx->sched_data;
-	struct blk_mq_ctx *ctx = blk_mq_get_ctx(hctx->queue);
-	struct kyber_ctx_queue *kcq = &khd->kcqs[ctx->index_hw[hctx->type]];
-	unsigned int sched_domain = kyber_sched_domain(bio->bi_opf);
-	struct list_head *rq_list = &kcq->rq_list[bio_to_css_id(bio)][sched_domain];
-	bool merged;
+    struct kyber_hctx_data *khd = hctx->sched_data;
+    struct blk_mq_ctx *ctx = blk_mq_get_ctx(hctx->queue);
+    struct kyber_ctx_queue *kcq = &khd->kcqs[ctx->index_hw[hctx->type]];
+    unsigned int sched_domain = kyber_sched_domain(bio->bi_opf);
+    struct list_head *rq_list = &kcq->rq_list[bio_to_css_id(bio)][sched_domain];
+    bool merged;
 
-	spin_lock(&kcq->lock);
-	merged = blk_mq_bio_list_merge(hctx->queue, rq_list, bio);
-	spin_unlock(&kcq->lock);
-	blk_mq_put_ctx(ctx);
+    spin_lock(&kcq->lock);
+    merged = blk_mq_bio_list_merge(hctx->queue, rq_list, bio);
+    spin_unlock(&kcq->lock);
+    blk_mq_put_ctx(ctx);
 
-	return merged;
+    return merged;
 }
 
 static void kyber_prepare_request(struct request *rq, struct bio *bio)
 {
-	rq_set_domain_token(rq, -1);
+    rq_set_domain_token(rq, -1);
 }
 
 static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
-				  struct list_head *rq_list, bool at_head)
+        struct list_head *rq_list, bool at_head)
 {
-	struct kyber_hctx_data *khd = hctx->sched_data;
-	struct request *rq, *next;
+    struct kyber_hctx_data *khd = hctx->sched_data;
+    struct request *rq, *next;
 
-	list_for_each_entry_safe(rq, next, rq_list, queuelist) {
-		unsigned int sched_domain = kyber_sched_domain(rq->cmd_flags);
-		struct kyber_ctx_queue *kcq = &khd->kcqs[rq->mq_ctx->index_hw[hctx->type]];
-		int id = bio_to_css_id(rq->bio);
-		struct list_head *head = &kcq->rq_list[id][sched_domain];
+    list_for_each_entry_safe(rq, next, rq_list, queuelist) {
+        unsigned int sched_domain = kyber_sched_domain(rq->cmd_flags);
+        struct kyber_ctx_queue *kcq = &khd->kcqs[rq->mq_ctx->index_hw[hctx->type]];
+        int id = bio_to_css_id(rq->bio);
+        struct list_head *head = &kcq->rq_list[id][sched_domain];
 
-		spin_lock(&kcq->lock);
-		if (at_head)
-			list_move(&rq->queuelist, head);
-		else
-			list_move_tail(&rq->queuelist, head);
-		sbitmap_set_bit(&khd->kcq_map[id][sched_domain],
-				rq->mq_ctx->index_hw[hctx->type]);
-		blk_mq_sched_request_inserted(rq);
-		spin_unlock(&kcq->lock);
-	}
+        spin_lock(&kcq->lock);
+        if (at_head)
+            list_move(&rq->queuelist, head);
+        else
+            list_move_tail(&rq->queuelist, head);
+        sbitmap_set_bit(&khd->kcq_map[id][sched_domain],
+                rq->mq_ctx->index_hw[hctx->type]);
+        blk_mq_sched_request_inserted(rq);
+        spin_unlock(&kcq->lock);
+    }
 }
 
 static void kyber_finish_request(struct request *rq)
 {
-	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
-	struct kyber_fairness *kf;
+    struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
+    struct kyber_fairness *kf;
 
-	rq_clear_domain_token(kqd, rq);
+    rq_clear_domain_token(kqd, rq);
 
-	kf = blkg_to_kf(rq->bio->bi_blkg);
-	spin_lock(&kf->lock);
-	printk("finish sectors: %d\n", blk_rq_sectors(rq));
-	kf->budget += blk_rq_sectors(rq);
-	spin_unlock(&kf->lock);
+    if (rq) {
+        if (rq->bio) {
+            if (rq->bio->bi_blkg) {
+                kf = blkg_to_kf(rq->bio->bi_blkg);
+                spin_lock(&kf->lock);
+                kf->budget += blk_rq_sectors(rq);
+                printk("[finish]budget: %d -> %d\n", kf->budget+blk_rq_sectors(rq), kf->budget);
+                spin_unlock(&kf->lock);
+            } else {
+                printk("[finish]no blkg\n");
+            }
+        } else {
+            printk("[finish]no bio\n");
+        }
+    } else {
+        printk("[finish]no rq\n");
+    }
+
 }
 
 static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
-			       unsigned int sched_domain, unsigned int type,
-			       u64 target, u64 latency)
+        unsigned int sched_domain, unsigned int type,
+        u64 target, u64 latency)
 {
-	unsigned int bucket;
-	u64 divisor;
+    unsigned int bucket;
+    u64 divisor;
 
-	if (latency > 0) {
-		divisor = max_t(u64, target >> KYBER_LATENCY_SHIFT, 1);
-		bucket = min_t(unsigned int, div64_u64(latency - 1, divisor),
-			       KYBER_LATENCY_BUCKETS - 1);
-	} else {
-		bucket = 0;
-	}
+    if (latency > 0) {
+        divisor = max_t(u64, target >> KYBER_LATENCY_SHIFT, 1);
+        bucket = min_t(unsigned int, div64_u64(latency - 1, divisor),
+                KYBER_LATENCY_BUCKETS - 1);
+    } else {
+        bucket = 0;
+    }
 
-	atomic_inc(&cpu_latency->buckets[sched_domain][type][bucket]);
+    atomic_inc(&cpu_latency->buckets[sched_domain][type][bucket]);
 }
 
 static void kyber_completed_request(struct request *rq, u64 now)
 {
-	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
-	struct kyber_cpu_latency *cpu_latency;
-	unsigned int sched_domain;
-	u64 target;
+    struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
+    struct kyber_cpu_latency *cpu_latency;
+    unsigned int sched_domain;
+    u64 target;
 
-	sched_domain = kyber_sched_domain(rq->cmd_flags);
-	if (sched_domain == KYBER_OTHER)
-		return;
+    sched_domain = kyber_sched_domain(rq->cmd_flags);
+    if (sched_domain == KYBER_OTHER)
+        return;
 
-	cpu_latency = get_cpu_ptr(kqd->cpu_latency);
-	target = kqd->latency_targets[sched_domain];
-	add_latency_sample(cpu_latency, sched_domain, KYBER_TOTAL_LATENCY,
-			   target, now - rq->start_time_ns);
-	add_latency_sample(cpu_latency, sched_domain, KYBER_IO_LATENCY, target,
-			   now - rq->io_start_time_ns);
-	put_cpu_ptr(kqd->cpu_latency);
+    cpu_latency = get_cpu_ptr(kqd->cpu_latency);
+    target = kqd->latency_targets[sched_domain];
+    add_latency_sample(cpu_latency, sched_domain, KYBER_TOTAL_LATENCY,
+            target, now - rq->start_time_ns);
+    add_latency_sample(cpu_latency, sched_domain, KYBER_IO_LATENCY, target,
+            now - rq->io_start_time_ns);
+    put_cpu_ptr(kqd->cpu_latency);
 
-	timer_reduce(&kqd->timer, jiffies + HZ / 10);
+    timer_reduce(&kqd->timer, jiffies + HZ / 10);
 }
 
 struct flush_kcq_data {
-	struct kyber_hctx_data *khd;
-	unsigned int sched_id;
-	unsigned int sched_domain;
-	struct list_head *list;
+    struct kyber_hctx_data *khd;
+    unsigned int sched_id;
+    unsigned int sched_domain;
+    struct list_head *list;
 };
 
 static bool flush_busy_kcq(struct sbitmap *sb, unsigned int bitnr, void *data)
 {
-	struct flush_kcq_data *flush_data = data;
-	struct kyber_ctx_queue *kcq = &flush_data->khd->kcqs[bitnr];
+    struct flush_kcq_data *flush_data = data;
+    struct kyber_ctx_queue *kcq = &flush_data->khd->kcqs[bitnr];
 
-	spin_lock(&kcq->lock);
-	list_splice_tail_init(&kcq->rq_list[flush_data->sched_id][flush_data->sched_domain],
-			      flush_data->list);
-	sbitmap_clear_bit(sb, bitnr);
-	spin_unlock(&kcq->lock);
+    spin_lock(&kcq->lock);
+    list_splice_tail_init(&kcq->rq_list[flush_data->sched_id][flush_data->sched_domain],
+            flush_data->list);
+    sbitmap_clear_bit(sb, bitnr);
+    spin_unlock(&kcq->lock);
 
-	return true;
+    return true;
 }
 
 static void kyber_flush_busy_kcqs(struct kyber_hctx_data *khd,
-				  unsigned int sched_id,
-				  unsigned int sched_domain,
-				  struct list_head *list)
+        unsigned int sched_id,
+        unsigned int sched_domain,
+        struct list_head *list)
 {
-	struct flush_kcq_data data = {
-		.khd = khd,
-		.sched_id = sched_id,
-		.sched_domain = sched_domain,
-		.list = list,
-	};
+    struct flush_kcq_data data = {
+        .khd = khd,
+        .sched_id = sched_id,
+        .sched_domain = sched_domain,
+        .list = list,
+    };
 
-	sbitmap_for_each_set(&khd->kcq_map[sched_id][sched_domain],
-			     flush_busy_kcq, &data);
+    sbitmap_for_each_set(&khd->kcq_map[sched_id][sched_domain],
+            flush_busy_kcq, &data);
 }
 
 static int kyber_domain_wake(wait_queue_entry_t *wqe, unsigned mode, int flags,
-			     void *key)
+        void *key)
 {
-	struct blk_mq_hw_ctx *hctx = READ_ONCE(wqe->private);
-	struct sbq_wait *wait = container_of(wqe, struct sbq_wait, wait);
+    struct blk_mq_hw_ctx *hctx = READ_ONCE(wqe->private);
+    struct sbq_wait *wait = container_of(wqe, struct sbq_wait, wait);
 
-	sbitmap_del_wait_queue(wait);
-	blk_mq_run_hw_queue(hctx, true);
-	return 1;
+    sbitmap_del_wait_queue(wait);
+    blk_mq_run_hw_queue(hctx, true);
+    return 1;
 }
 
 static int kyber_get_domain_token(struct kyber_queue_data *kqd,
-				  struct kyber_hctx_data *khd,
-				  struct blk_mq_hw_ctx *hctx)
+        struct kyber_hctx_data *khd,
+        struct blk_mq_hw_ctx *hctx)
 {
-	unsigned int sched_domain = khd->cur_domain;
-	struct sbitmap_queue *domain_tokens = &kqd->domain_tokens[sched_domain];
-	struct sbq_wait *wait = &khd->domain_wait[sched_domain];
-	struct sbq_wait_state *ws;
-	int nr;
+    unsigned int sched_domain = khd->cur_domain;
+    struct sbitmap_queue *domain_tokens = &kqd->domain_tokens[sched_domain];
+    struct sbq_wait *wait = &khd->domain_wait[sched_domain];
+    struct sbq_wait_state *ws;
+    int nr;
 
-	nr = __sbitmap_queue_get(domain_tokens);
+    nr = __sbitmap_queue_get(domain_tokens);
 
-	/*
-	 * If we failed to get a domain token, make sure the hardware queue is
-	 * run when one becomes available. Note that this is serialized on
-	 * khd->lock, but we still need to be careful about the waker.
-	 */
-	if (nr < 0 && list_empty_careful(&wait->wait.entry)) {
-		ws = sbq_wait_ptr(domain_tokens,
-				  &khd->wait_index[sched_domain]);
-		khd->domain_ws[sched_domain] = ws;
-		sbitmap_add_wait_queue(domain_tokens, ws, wait);
+    /*
+     * If we failed to get a domain token, make sure the hardware queue is
+     * run when one becomes available. Note that this is serialized on
+     * khd->lock, but we still need to be careful about the waker.
+     */
+    if (nr < 0 && list_empty_careful(&wait->wait.entry)) {
+        ws = sbq_wait_ptr(domain_tokens,
+                &khd->wait_index[sched_domain]);
+        khd->domain_ws[sched_domain] = ws;
+        sbitmap_add_wait_queue(domain_tokens, ws, wait);
 
-		/*
-		 * Try again in case a token was freed before we got on the wait
-		 * queue.
-		 */
-		nr = __sbitmap_queue_get(domain_tokens);
-	}
+        /*
+         * Try again in case a token was freed before we got on the wait
+         * queue.
+         */
+        nr = __sbitmap_queue_get(domain_tokens);
+    }
 
-	/*
-	 * If we got a token while we were on the wait queue, remove ourselves
-	 * from the wait queue to ensure that all wake ups make forward
-	 * progress. It's possible that the waker already deleted the entry
-	 * between the !list_empty_careful() check and us grabbing the lock, but
-	 * list_del_init() is okay with that.
-	 */
-	if (nr >= 0 && !list_empty_careful(&wait->wait.entry)) {
-		ws = khd->domain_ws[sched_domain];
-		spin_lock_irq(&ws->wait.lock);
-		sbitmap_del_wait_queue(wait);
-		spin_unlock_irq(&ws->wait.lock);
-	}
+    /*
+     * If we got a token while we were on the wait queue, remove ourselves
+     * from the wait queue to ensure that all wake ups make forward
+     * progress. It's possible that the waker already deleted the entry
+     * between the !list_empty_careful() check and us grabbing the lock, but
+     * list_del_init() is okay with that.
+     */
+    if (nr >= 0 && !list_empty_careful(&wait->wait.entry)) {
+        ws = khd->domain_ws[sched_domain];
+        spin_lock_irq(&ws->wait.lock);
+        sbitmap_del_wait_queue(wait);
+        spin_unlock_irq(&ws->wait.lock);
+    }
 
-	return nr;
+    return nr;
 }
 
 static struct request *
 kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
-			  struct kyber_hctx_data *khd,
-			  struct blk_mq_hw_ctx *hctx,
-			  int cgroup_id)
+        struct kyber_hctx_data *khd,
+        struct blk_mq_hw_ctx *hctx,
+        int cgroup_id)
 {
-	struct list_head *rqs;
-	struct request *rq;
-	struct kyber_fairness *kf;
-	int nr;
+    struct list_head *rqs;
+    struct request *rq;
+    struct kyber_fairness *kf;
+    int nr;
 
-	rqs = &khd->rqs[cgroup_id][khd->cur_domain];
+    rqs = &khd->rqs[cgroup_id][khd->cur_domain];
 
-	/*
-	 * If we already have a flushed request, then we just need to get a
-	 * token for it. Otherwise, if there are pending requests in the kcqs,
-	 * flush the kcqs, but only if we can get a token. If not, we should
-	 * leave the requests in the kcqs so that they can be merged. Note that
-	 * khd->lock serializes the flushes, so if we observed any bit set in
-	 * the kcq_map, we will always get a request.
-	 */
+    /*
+     * If we already have a flushed request, then we just need to get a
+     * token for it. Otherwise, if there are pending requests in the kcqs,
+     * flush the kcqs, but only if we can get a token. If not, we should
+     * leave the requests in the kcqs so that they can be merged. Note that
+     * khd->lock serializes the flushes, so if we observed any bit set in
+     * the kcq_map, we will always get a request.
+     */
 
-	rq = list_first_entry_or_null(rqs, struct request, queuelist);
-	if (rq) {
-		nr = kyber_get_domain_token(kqd, khd, hctx);
-		if (nr >= 0) {
-			khd->batching++;
-			rq_set_domain_token(rq, nr);
-			list_del_init(&rq->queuelist);
+    rq = list_first_entry_or_null(rqs, struct request, queuelist);
+    if (rq) {
+        nr = kyber_get_domain_token(kqd, khd, hctx);
+        if (nr >= 0) {
+            khd->batching++;
+            rq_set_domain_token(rq, nr);
+            list_del_init(&rq->queuelist);
 
-			kf = blkg_to_kf(rq->bio->bi_blkg);
-			spin_lock(&kf->lock);
-			printk("[%d] budget: %d -> %d\n", cgroup_id, kf->budget, kf->budget-blk_rq_sectors(rq));
-			kf->budget -= blk_rq_sectors(rq);
-			spin_unlock(&kf->lock);
+            kf = blkg_to_kf(rq->bio->bi_blkg);
+            spin_lock(&kf->lock);
+            printk("[%d] budget: %d -> %d\n", cgroup_id, kf->budget, kf->budget-blk_rq_sectors(rq));
+            kf->budget -= blk_rq_sectors(rq);
+            spin_unlock(&kf->lock);
 
-			return rq;
-		} else {
-			trace_kyber_throttled(kqd->q,
-					      kyber_domain_names[khd->cur_domain]);
-		}
-	} else if (sbitmap_any_bit_set(&khd->kcq_map[cgroup_id][khd->cur_domain])) {
-		nr = kyber_get_domain_token(kqd, khd, hctx);
-		if (nr >= 0) {
-			kyber_flush_busy_kcqs(khd, cgroup_id, khd->cur_domain, rqs);
-			rq = list_first_entry(rqs, struct request, queuelist);
-			khd->batching++;
-			rq_set_domain_token(rq, nr);
-			list_del_init(&rq->queuelist);
+            return rq;
+        } else {
+            trace_kyber_throttled(kqd->q,
+                    kyber_domain_names[khd->cur_domain]);
+        }
+    } else if (sbitmap_any_bit_set(&khd->kcq_map[cgroup_id][khd->cur_domain])) {
+        nr = kyber_get_domain_token(kqd, khd, hctx);
+        if (nr >= 0) {
+            kyber_flush_busy_kcqs(khd, cgroup_id, khd->cur_domain, rqs);
+            rq = list_first_entry(rqs, struct request, queuelist);
+            khd->batching++;
+            rq_set_domain_token(rq, nr);
+            list_del_init(&rq->queuelist);
 
-			kf = blkg_to_kf(rq->bio->bi_blkg);
-			spin_lock(&kf->lock);
-			printk("[%d] budget: %d -> %d\n", cgroup_id, kf->budget, kf->budget-blk_rq_sectors(rq));
-			kf->budget -= blk_rq_sectors(rq);
-			spin_unlock(&kf->lock);
+            kf = blkg_to_kf(rq->bio->bi_blkg);
+            spin_lock(&kf->lock);
+            printk("[%d] budget: %d -> %d\n", cgroup_id, kf->budget, kf->budget-blk_rq_sectors(rq));
+            kf->budget -= blk_rq_sectors(rq);
+            spin_unlock(&kf->lock);
 
-			return rq;
-		} else {
-			trace_kyber_throttled(kqd->q,
-					      kyber_domain_names[khd->cur_domain]);
-		}
-	}
+            return rq;
+        } else {
+            trace_kyber_throttled(kqd->q,
+                    kyber_domain_names[khd->cur_domain]);
+        }
+    }
 
-	/* There were either no pending requests or no tokens. */
-	return NULL;
+    /* There were either no pending requests or no tokens. */
+    return NULL;
 }
 
 static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
 {
-	struct kyber_fairness *kf;
-	struct cgroup_subsys_state *css;
-	struct kyber_hctx_data *khd = hctx->sched_data;
+    struct kyber_fairness *kf;
+    struct cgroup_subsys_state *css;
+    struct kyber_hctx_data *khd = hctx->sched_data;
     int domain;
 
-	rcu_read_lock();
-	css = css_from_id(id, &io_cgrp_subsys);
-	rcu_read_unlock();
-	kf = css_to_kf(css, hctx->queue);
+    rcu_read_lock();
+    css = css_from_id(id, &io_cgrp_subsys);
+    rcu_read_unlock();
+    kf = css_to_kf(css, hctx->queue);
 
-	if (!kf)
-		return -ERANGE;
+    if (!kf)
+        return -ERANGE;
 
-	kf->idle = true;
-	for (domain = 0; domain < KYBER_NUM_DOMAINS; domain++) {
-		if (!list_empty_careful(&khd->rqs[id][domain]) ||
-				sbitmap_any_bit_set(&khd->kcq_map[id][domain])) {
-			kf->idle = false;
-			return 1;
-		}
-	}
+    for (domain = 0; domain < KYBER_NUM_DOMAINS; domain++) {
+        if (!list_empty_careful(&khd->rqs[id][domain]) ||
+                sbitmap_any_bit_set(&khd->kcq_map[id][domain])) {
+            return 1;
+        }
+    }
 
-	return 0;
+    return 0;
 }
 
 static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 {
-	struct cgroup_subsys_state *css;
-	struct kyber_fairness *kf;
-	struct request_queue *q = hctx->queue;
-	int id;
+    struct cgroup_subsys_state *css;
+    struct kyber_fairness *kf;
+    struct request_queue *q = hctx->queue;
+    int id;
 
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		switch (kyber_is_active(id, hctx)) {
-			case -ERANGE:
-				return 0;
-			case 1:
-				rcu_read_lock();
-				css = css_from_id(id, &io_cgrp_subsys);
-				rcu_read_unlock();
-				
-				kf = css_to_kf(css, q);
-				if (kf->budget > 0)
-					return id;
-		}
-	}
+    for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+        switch (kyber_is_active(id, hctx)) {
+            case -ERANGE:
+                return 0;
+            case 1:
+                rcu_read_lock();
+                css = css_from_id(id, &io_cgrp_subsys);
+                rcu_read_unlock();
 
-	/* NEVER TOUCH THIS LINE */
-	return -ERANGE;
+                /* NEVER kf can be NULL */
+                kf = css_to_kf(css, q);
+                if (kf->budget > 0)
+                    return id;
+        }
+    }
+
+    /* NEVER TOUCH THIS LINE */
+    return -ERANGE;
 }
 
 static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 {
-	struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
-	struct kyber_hctx_data *khd = hctx->sched_data;
-	struct request *rq;
-	int i, cgroup_id;
+    struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
+    struct kyber_hctx_data *khd = hctx->sched_data;
+    struct request *rq;
+    int i, cgroup_id;
 
-	spin_lock(&khd->lock);
-	cgroup_id = kyber_choose_cgroup(hctx);
+    spin_lock(&khd->lock);
+    cgroup_id = kyber_choose_cgroup(hctx);
 
-	printk("[%d] selected cgroup_id\n", cgroup_id);
+    printk("[%d] selected cgroup_id\n", cgroup_id);
 
-	if (!cgroup_id)
-		 goto nothing;
-	
-	/*
-	 * First, if we are still entitled to batch, try to dispatch a request
-	 * from the batch.
-	 */
-	if (khd->batching < kyber_batch_size[khd->cur_domain]) {
-		rq = kyber_dispatch_cur_domain(kqd, khd, hctx, cgroup_id);
-		if (rq)
-			goto out;
-	}
+    if (!cgroup_id)
+        goto nothing;
 
-	/*
-	 * Either,
-	 * 1. We were no longer entitled to a batch.
-	 * 2. The domain we were batching didn't have any requests.
-	 * 3. The domain we were batching was out of tokens.
-	 *
-	 * Start another batch. Note that this wraps back around to the original
-	 * domain if no other domains have requests or tokens.
-	 */
-	khd->batching = 0;
-	for (i = 0; i < KYBER_NUM_DOMAINS; i++) {
-		if (khd->cur_domain == KYBER_NUM_DOMAINS - 1)
-			khd->cur_domain = 0;
-		else
-			khd->cur_domain++;
+    /*
+     * First, if we are still entitled to batch, try to dispatch a request
+     * from the batch.
+     */
+    if (khd->batching < kyber_batch_size[khd->cur_domain]) {
+        rq = kyber_dispatch_cur_domain(kqd, khd, hctx, cgroup_id);
+        if (rq)
+            goto out;
+    }
 
-		rq = kyber_dispatch_cur_domain(kqd, khd, hctx, cgroup_id);
-		if (rq)
-			goto out;
-	}
+    /*
+     * Either,
+     * 1. We were no longer entitled to a batch.
+     * 2. The domain we were batching didn't have any requests.
+     * 3. The domain we were batching was out of tokens.
+     *
+     * Start another batch. Note that this wraps back around to the original
+     * domain if no other domains have requests or tokens.
+     */
+    khd->batching = 0;
+    for (i = 0; i < KYBER_NUM_DOMAINS; i++) {
+        if (khd->cur_domain == KYBER_NUM_DOMAINS - 1)
+            khd->cur_domain = 0;
+        else
+            khd->cur_domain++;
+
+        rq = kyber_dispatch_cur_domain(kqd, khd, hctx, cgroup_id);
+        if (rq)
+            goto out;
+    }
 
 nothing:
-	rq = NULL;
+    rq = NULL;
 out:
-	spin_unlock(&khd->lock);
+    spin_unlock(&khd->lock);
 
-	return rq;
+    return rq;
 }
 
 static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 {
-	int id;
+    int id;
 
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		switch (kyber_is_active(id, hctx)) {
-			case -ERANGE:
-				return false;
-			case 1:
-				return true;
-		}
-	}
+    for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+        switch (kyber_is_active(id, hctx)) {
+            case -ERANGE:
+                return false;
+            case 1:
+                return true;
+        }
+    }
 
-	return false;
+    return false;
 }
 
 #define KYBER_LAT_SHOW_STORE(domain, name)				\
-static ssize_t kyber_##name##_lat_show(struct elevator_queue *e,	\
-				       char *page)			\
+    static ssize_t kyber_##name##_lat_show(struct elevator_queue *e,	\
+            char *page)			\
 {									\
-	struct kyber_queue_data *kqd = e->elevator_data;		\
-									\
-	return sprintf(page, "%llu\n", kqd->latency_targets[domain]);	\
+    struct kyber_queue_data *kqd = e->elevator_data;		\
+    \
+    return sprintf(page, "%llu\n", kqd->latency_targets[domain]);	\
 }									\
-									\
+\
 static ssize_t kyber_##name##_lat_store(struct elevator_queue *e,	\
-					const char *page, size_t count)	\
+        const char *page, size_t count)	\
 {									\
-	struct kyber_queue_data *kqd = e->elevator_data;		\
-	unsigned long long nsec;					\
-	int ret;							\
-									\
-	ret = kstrtoull(page, 10, &nsec);				\
-	if (ret)							\
-		return ret;						\
-									\
-	kqd->latency_targets[domain] = nsec;				\
-									\
-	return count;							\
+    struct kyber_queue_data *kqd = e->elevator_data;		\
+    unsigned long long nsec;					\
+    int ret;							\
+    \
+    ret = kstrtoull(page, 10, &nsec);				\
+    if (ret)							\
+    return ret;						\
+    \
+    kqd->latency_targets[domain] = nsec;				\
+    \
+    return count;							\
 }
 KYBER_LAT_SHOW_STORE(KYBER_READ, read);
 KYBER_LAT_SHOW_STORE(KYBER_WRITE, write);
@@ -1228,173 +1234,173 @@ KYBER_LAT_SHOW_STORE(KYBER_WRITE, write);
 
 #define KYBER_LAT_ATTR(op) __ATTR(op##_lat_nsec, 0644, kyber_##op##_lat_show, kyber_##op##_lat_store)
 static struct elv_fs_entry kyber_sched_attrs[] = {
-	KYBER_LAT_ATTR(read),
-	KYBER_LAT_ATTR(write),
-	__ATTR_NULL
+    KYBER_LAT_ATTR(read),
+    KYBER_LAT_ATTR(write),
+    __ATTR_NULL
 };
 #undef KYBER_LAT_ATTR
 
 #ifdef CONFIG_BLK_DEBUG_FS
 #define KYBER_DEBUGFS_DOMAIN_ATTRS(cgroup, domain, name)			\
-static int kyber_##name##_tokens_show(void *data, struct seq_file *m)	\
+    static int kyber_##name##_tokens_show(void *data, struct seq_file *m)	\
 {									\
-	struct request_queue *q = data;					\
-	struct kyber_queue_data *kqd = q->elevator->elevator_data;	\
-									\
-	sbitmap_queue_show(&kqd->domain_tokens[domain], m);		\
-	return 0;							\
+    struct request_queue *q = data;					\
+    struct kyber_queue_data *kqd = q->elevator->elevator_data;	\
+    \
+    sbitmap_queue_show(&kqd->domain_tokens[domain], m);		\
+    return 0;							\
 }									\
-									\
+\
 static void *kyber_##name##_rqs_start(struct seq_file *m, loff_t *pos)	\
-	__acquires(&khd->lock)						\
+__acquires(&khd->lock)						\
 {									\
-	struct blk_mq_hw_ctx *hctx = m->private;			\
-	struct kyber_hctx_data *khd = hctx->sched_data;			\
-									\
-	spin_lock(&khd->lock);						\
-	return seq_list_start(&khd->rqs[cgroup][domain], *pos);			\
+    struct blk_mq_hw_ctx *hctx = m->private;			\
+    struct kyber_hctx_data *khd = hctx->sched_data;			\
+    \
+    spin_lock(&khd->lock);						\
+    return seq_list_start(&khd->rqs[cgroup][domain], *pos);			\
 }									\
-									\
+\
 static void *kyber_##name##_rqs_next(struct seq_file *m, void *v,	\
-				     loff_t *pos)			\
+        loff_t *pos)			\
 {									\
-	struct blk_mq_hw_ctx *hctx = m->private;			\
-	struct kyber_hctx_data *khd = hctx->sched_data;			\
-									\
-	return seq_list_next(v, &khd->rqs[cgroup][domain], pos);		\
+    struct blk_mq_hw_ctx *hctx = m->private;			\
+    struct kyber_hctx_data *khd = hctx->sched_data;			\
+    \
+    return seq_list_next(v, &khd->rqs[cgroup][domain], pos);		\
 }									\
-									\
+\
 static void kyber_##name##_rqs_stop(struct seq_file *m, void *v)	\
-	__releases(&khd->lock)						\
+__releases(&khd->lock)						\
 {									\
-	struct blk_mq_hw_ctx *hctx = m->private;			\
-	struct kyber_hctx_data *khd = hctx->sched_data;			\
-									\
-	spin_unlock(&khd->lock);					\
+    struct blk_mq_hw_ctx *hctx = m->private;			\
+    struct kyber_hctx_data *khd = hctx->sched_data;			\
+    \
+    spin_unlock(&khd->lock);					\
 }									\
-									\
+\
 static const struct seq_operations kyber_##name##_rqs_seq_ops = {	\
-	.start	= kyber_##name##_rqs_start,				\
-	.next	= kyber_##name##_rqs_next,				\
-	.stop	= kyber_##name##_rqs_stop,				\
-	.show	= blk_mq_debugfs_rq_show,				\
+    .start	= kyber_##name##_rqs_start,				\
+    .next	= kyber_##name##_rqs_next,				\
+    .stop	= kyber_##name##_rqs_stop,				\
+    .show	= blk_mq_debugfs_rq_show,				\
 };									\
-									\
+\
 static int kyber_##name##_waiting_show(void *data, struct seq_file *m)	\
 {									\
-	struct blk_mq_hw_ctx *hctx = data;				\
-	struct kyber_hctx_data *khd = hctx->sched_data;			\
-	wait_queue_entry_t *wait = &khd->domain_wait[domain].wait;	\
-									\
-	seq_printf(m, "%d\n", !list_empty_careful(&wait->entry));	\
-	return 0;							\
+    struct blk_mq_hw_ctx *hctx = data;				\
+    struct kyber_hctx_data *khd = hctx->sched_data;			\
+    wait_queue_entry_t *wait = &khd->domain_wait[domain].wait;	\
+    \
+    seq_printf(m, "%d\n", !list_empty_careful(&wait->entry));	\
+    return 0;							\
 }
-KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_READ, read)
-KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_WRITE, write)
-KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_DISCARD, discard)
+    KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_READ, read)
+    KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_WRITE, write)
+    KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_DISCARD, discard)
 KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_OTHER, other)
 #undef KYBER_DEBUGFS_DOMAIN_ATTRS
 
 static int kyber_async_depth_show(void *data, struct seq_file *m)
 {
-	struct request_queue *q = data;
-	struct kyber_queue_data *kqd = q->elevator->elevator_data;
+    struct request_queue *q = data;
+    struct kyber_queue_data *kqd = q->elevator->elevator_data;
 
-	seq_printf(m, "%u\n", kqd->async_depth);
-	return 0;
+    seq_printf(m, "%u\n", kqd->async_depth);
+    return 0;
 }
 
 static int kyber_cur_domain_show(void *data, struct seq_file *m)
 {
-	struct blk_mq_hw_ctx *hctx = data;
-	struct kyber_hctx_data *khd = hctx->sched_data;
+    struct blk_mq_hw_ctx *hctx = data;
+    struct kyber_hctx_data *khd = hctx->sched_data;
 
-	seq_printf(m, "%s\n", kyber_domain_names[khd->cur_domain]);
-	return 0;
+    seq_printf(m, "%s\n", kyber_domain_names[khd->cur_domain]);
+    return 0;
 }
 
 static int kyber_batching_show(void *data, struct seq_file *m)
 {
-	struct blk_mq_hw_ctx *hctx = data;
-	struct kyber_hctx_data *khd = hctx->sched_data;
+    struct blk_mq_hw_ctx *hctx = data;
+    struct kyber_hctx_data *khd = hctx->sched_data;
 
-	seq_printf(m, "%u\n", khd->batching);
-	return 0;
+    seq_printf(m, "%u\n", khd->batching);
+    return 0;
 }
 
 #define KYBER_QUEUE_DOMAIN_ATTRS(name)	\
-	{#name "_tokens", 0400, kyber_##name##_tokens_show}
+{#name "_tokens", 0400, kyber_##name##_tokens_show}
 static const struct blk_mq_debugfs_attr kyber_queue_debugfs_attrs[] = {
-	KYBER_QUEUE_DOMAIN_ATTRS(read),
-	KYBER_QUEUE_DOMAIN_ATTRS(write),
-	KYBER_QUEUE_DOMAIN_ATTRS(discard),
-	KYBER_QUEUE_DOMAIN_ATTRS(other),
-	{"async_depth", 0400, kyber_async_depth_show},
-	{},
+    KYBER_QUEUE_DOMAIN_ATTRS(read),
+    KYBER_QUEUE_DOMAIN_ATTRS(write),
+    KYBER_QUEUE_DOMAIN_ATTRS(discard),
+    KYBER_QUEUE_DOMAIN_ATTRS(other),
+    {"async_depth", 0400, kyber_async_depth_show},
+    {},
 };
 #undef KYBER_QUEUE_DOMAIN_ATTRS
 
 #define KYBER_HCTX_DOMAIN_ATTRS(name)					\
-	{#name "_rqs", 0400, .seq_ops = &kyber_##name##_rqs_seq_ops},	\
-	{#name "_waiting", 0400, kyber_##name##_waiting_show}
+{#name "_rqs", 0400, .seq_ops = &kyber_##name##_rqs_seq_ops},	\
+{#name "_waiting", 0400, kyber_##name##_waiting_show}
 static const struct blk_mq_debugfs_attr kyber_hctx_debugfs_attrs[] = {
-	KYBER_HCTX_DOMAIN_ATTRS(read),
-	KYBER_HCTX_DOMAIN_ATTRS(write),
-	KYBER_HCTX_DOMAIN_ATTRS(discard),
-	KYBER_HCTX_DOMAIN_ATTRS(other),
-	{"cur_domain", 0400, kyber_cur_domain_show},
-	{"batching", 0400, kyber_batching_show},
-	{},
+    KYBER_HCTX_DOMAIN_ATTRS(read),
+    KYBER_HCTX_DOMAIN_ATTRS(write),
+    KYBER_HCTX_DOMAIN_ATTRS(discard),
+    KYBER_HCTX_DOMAIN_ATTRS(other),
+    {"cur_domain", 0400, kyber_cur_domain_show},
+    {"batching", 0400, kyber_batching_show},
+    {},
 };
 #undef KYBER_HCTX_DOMAIN_ATTRS
 #endif
 
 static struct elevator_type kyber_sched = {
-	.ops = {
-		.init_sched = kyber_init_sched,
-		.exit_sched = kyber_exit_sched,
-		.init_hctx = kyber_init_hctx,
-		.exit_hctx = kyber_exit_hctx,
-		.limit_depth = kyber_limit_depth,
-		.bio_merge = kyber_bio_merge,
-		.prepare_request = kyber_prepare_request,
-		.insert_requests = kyber_insert_requests,
-		.finish_request = kyber_finish_request,
-		.requeue_request = kyber_finish_request,
-		.completed_request = kyber_completed_request,
-		.dispatch_request = kyber_dispatch_request,
-		.has_work = kyber_has_work,
-	},
+    .ops = {
+        .init_sched = kyber_init_sched,
+        .exit_sched = kyber_exit_sched,
+        .init_hctx = kyber_init_hctx,
+        .exit_hctx = kyber_exit_hctx,
+        .limit_depth = kyber_limit_depth,
+        .bio_merge = kyber_bio_merge,
+        .prepare_request = kyber_prepare_request,
+        .insert_requests = kyber_insert_requests,
+        .finish_request = kyber_finish_request,
+        .requeue_request = kyber_finish_request,
+        .completed_request = kyber_completed_request,
+        .dispatch_request = kyber_dispatch_request,
+        .has_work = kyber_has_work,
+    },
 #ifdef CONFIG_BLK_DEBUG_FS
-	.queue_debugfs_attrs = kyber_queue_debugfs_attrs,
-	.hctx_debugfs_attrs = kyber_hctx_debugfs_attrs,
+    .queue_debugfs_attrs = kyber_queue_debugfs_attrs,
+    .hctx_debugfs_attrs = kyber_hctx_debugfs_attrs,
 #endif
-	.elevator_attrs = kyber_sched_attrs,
-	.elevator_name = "kyber",
-	.elevator_owner = THIS_MODULE,
+    .elevator_attrs = kyber_sched_attrs,
+    .elevator_name = "kyber",
+    .elevator_owner = THIS_MODULE,
 };
 
 static int __init kyber_init(void)
 {
-	int ret;
+    int ret;
 
-	ret = blkcg_policy_register(&blkcg_policy_kyber);
-	if (ret)
-		return ret;
+    ret = blkcg_policy_register(&blkcg_policy_kyber);
+    if (ret)
+        return ret;
 
-	ret = elv_register(&kyber_sched);
-	if (ret) {
-		blkcg_policy_unregister(&blkcg_policy_kyber);
-		return ret;
-	}
+    ret = elv_register(&kyber_sched);
+    if (ret) {
+        blkcg_policy_unregister(&blkcg_policy_kyber);
+        return ret;
+    }
 
-	return 0;
+    return 0;
 }
 
 static void __exit kyber_exit(void)
 {
-	elv_unregister(&kyber_sched);
-	blkcg_policy_unregister(&blkcg_policy_kyber);
+    elv_unregister(&kyber_sched);
+    blkcg_policy_unregister(&blkcg_policy_kyber);
 }
 
 module_init(kyber_init);
