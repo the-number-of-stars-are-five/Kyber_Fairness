@@ -238,6 +238,18 @@ static struct kyber_fairness *blkg_to_kf(struct blkcg_gq *blkg)
 	return pd_to_kf(blkg_to_pd(blkg, &blkcg_policy_kyber));
 }
 
+static struct kyber_fairness *kf_from_rq(struct request *rq)
+{
+	if (!rq)
+		return NULL;
+	if (!rq->bio)
+		return NULL;
+	if (!rq->bio->bi_blkg)
+		return NULL;
+
+	return blkg_to_kf(rq->bio->bi_blkg);
+}
+
 static int bio_to_css_id(struct bio *bio)
 {
 	return bio->bi_blkg->blkcg->css.id;
@@ -249,7 +261,7 @@ static struct kyber_fairness *css_to_kf(struct cgroup_subsys_state *css, struct 
 	struct blkcg_gq *blkg;
 	struct kyber_fairness *kf;
 
-	if (!css)
+	if (!css || !q)
 		return NULL;
 
 	blkcg = css_to_blkcg(css);
@@ -472,6 +484,27 @@ static void kyber_resize_domain(struct kyber_queue_data *kqd,
 		trace_kyber_adjust(kqd->q, kyber_domain_names[sched_domain],
 				depth);
 	}
+}
+
+static void kyber_get_info(struct request_queue *q)
+{
+	struct cgroup_subsys_state *css;
+	struct kyber_fairness *kf;
+	struct kyber_fairness_data *kfd;
+	int id;
+
+	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+		rcu_read_lock();
+		css = css_from_id(id, &io_cgrp_subsys);
+		rcu_read_unlock();
+
+		kf = css_to_kf(css, q);
+		if (!kf)
+			return;
+
+		printk("[%d] budget: %d\n", id, kf->budget);
+	}
+	printk("--------------------------------\n");
 }
 
 static void kyber_refill_budget(struct request_queue *q, int size)
@@ -860,49 +893,36 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 
 static struct kyber_rq_info *rq_get_info(struct request *rq)
 {
+	if (!rq)
+		return NULL;
+
 	return (struct kyber_rq_info *)rq->elv.priv[1];
 }
 
-static void rq_set_info(struct request *rq)
+static void rq_set_info(struct kyber_fairness *kf, struct request *rq)
 {
 	struct kyber_rq_info *rq_info;
-	struct kyber_fairness *kf;
 
 	if (!rq)
 		return;
 
+	if (!rq->bio)
+		return;
+
+	if (!rq->bio->bi_blkg)
+		return;
+
 	rq_info = kmalloc(sizeof(*rq_info), GFP_KERNEL);
-
 	rq_info->sectors = blk_rq_sectors(rq);
-
-	kf = blkg_to_kf(rq->bio->bi_blkg);
 	rq_info->id = kf->pd.plid;
-
 	rq->elv.priv[1] = rq_info;
 }
 
 static void kyber_finish_request(struct request *rq)
 {
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
-	struct kyber_fairness *kf;
-	struct kyber_rq_info *rq_info;
-	struct cgroup_subsys_state *css;
 
 	rq_clear_domain_token(kqd, rq);
-
-	rq_info = rq_get_info(rq);
-	if (rq_info) {
-		rcu_read_lock();
-		css = css_from_id(rq_info->id, &io_cgrp_subsys);
-		rcu_read_unlock();
-		kf = css_to_kf(css, rq->q);
-
-		spin_lock(&kf->lock);
-		kf->budget += rq_info->sectors;
-		spin_unlock(&kf->lock);
-
-		kfree(rq_info);
-	}
 }
 
 static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
@@ -929,6 +949,9 @@ static void kyber_completed_request(struct request *rq, u64 now)
 	struct kyber_cpu_latency *cpu_latency;
 	unsigned int sched_domain;
 	u64 target;
+	struct kyber_fairness *kf;
+	struct kyber_rq_info *rq_info;
+	struct cgroup_subsys_state *css;
 
 	sched_domain = kyber_sched_domain(rq->cmd_flags);
 	if (sched_domain == KYBER_OTHER)
@@ -943,6 +966,23 @@ static void kyber_completed_request(struct request *rq, u64 now)
 	put_cpu_ptr(kqd->cpu_latency);
 
 	timer_reduce(&kqd->timer, jiffies + HZ / 10);
+
+	rq_info = rq_get_info(rq);
+	if (rq_info) {
+		rcu_read_lock();
+		css = css_from_id(rq_info->id, &io_cgrp_subsys);
+		rcu_read_unlock();
+
+		kf = css_to_kf(css, rq->q);
+
+		if (kf) {
+			spin_lock(&kf->lock);
+			kf->budget += rq_info->sectors;
+			spin_unlock(&kf->lock);
+		}
+
+		kfree(rq_info);
+	}
 }
 
 struct flush_kcq_data {
@@ -1091,10 +1131,14 @@ out:
 	rq_set_domain_token(rq, nr);
 	list_del_init(&rq->queuelist);
 
-	kf = blkg_to_kf(rq->bio->bi_blkg);
-	spin_lock(&kf->lock);
-	kf->budget -= blk_rq_sectors(rq);
-	spin_unlock(&kf->lock);
+	kf = kf_from_rq(rq);
+	if (kf) {
+		spin_lock(&kf->lock);
+		kf->budget -= blk_rq_sectors(rq);
+		spin_unlock(&kf->lock);
+
+		rq_set_info(kf, rq);
+	}
 
 	return rq;
 }
@@ -1173,10 +1217,8 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	 */
 	if (khd->batching < kyber_batch_size[khd->cur_domain]) {
 		rq = kyber_dispatch_cur_domain(kqd, khd, hctx, cgroup_id);
-		if (rq) {
-			rq_set_info(rq);
+		if (rq)
 			goto out;
-		}
 	}
 
 	/*
@@ -1196,10 +1238,8 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 			khd->cur_domain++;
 
 		rq = kyber_dispatch_cur_domain(kqd, khd, hctx, cgroup_id);
-		if (rq) {
-			rq_set_info(rq);
+		if (rq)
 			goto out;
-		}
 	}
 
 nothing:
