@@ -858,31 +858,6 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 	}
 }
 
-static void kyber_finish_request(struct request *rq)
-{
-	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
-
-	rq_clear_domain_token(kqd, rq);
-}
-
-static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
-		unsigned int sched_domain, unsigned int type,
-		u64 target, u64 latency)
-{
-	unsigned int bucket;
-	u64 divisor;
-
-	if (latency > 0) {
-		divisor = max_t(u64, target >> KYBER_LATENCY_SHIFT, 1);
-		bucket = min_t(unsigned int, div64_u64(latency - 1, divisor),
-				KYBER_LATENCY_BUCKETS - 1);
-	} else {
-		bucket = 0;
-	}
-
-	atomic_inc(&cpu_latency->buckets[sched_domain][type][bucket]);
-}
-
 static struct kyber_rq_info *rq_get_info(struct request *rq)
 {
 	return (struct kyber_rq_info *)rq->elv.priv[1];
@@ -906,12 +881,51 @@ static void rq_set_info(struct request *rq)
 	rq->elv.priv[1] = rq_info;
 }
 
-static void kyber_completed_request(struct request *rq, u64 now)
+static void kyber_finish_request(struct request *rq)
 {
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
 	struct kyber_fairness *kf;
 	struct kyber_rq_info *rq_info;
 	struct cgroup_subsys_state *css;
+
+	rq_clear_domain_token(kqd, rq);
+
+	rq_info = rq_get_info(rq);
+	if (rq_info) {
+		rcu_read_lock();
+		css = css_from_id(rq_info->id, &io_cgrp_subsys);
+		rcu_read_unlock();
+		kf = css_to_kf(css, rq->q);
+
+		spin_lock(&kf->lock);
+		kf->budget += rq_info->sectors;
+		spin_unlock(&kf->lock);
+
+		kfree(rq_info);
+	}
+}
+
+static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
+		unsigned int sched_domain, unsigned int type,
+		u64 target, u64 latency)
+{
+	unsigned int bucket;
+	u64 divisor;
+
+	if (latency > 0) {
+		divisor = max_t(u64, target >> KYBER_LATENCY_SHIFT, 1);
+		bucket = min_t(unsigned int, div64_u64(latency - 1, divisor),
+				KYBER_LATENCY_BUCKETS - 1);
+	} else {
+		bucket = 0;
+	}
+
+	atomic_inc(&cpu_latency->buckets[sched_domain][type][bucket]);
+}
+
+static void kyber_completed_request(struct request *rq, u64 now)
+{
+	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
 	struct kyber_cpu_latency *cpu_latency;
 	unsigned int sched_domain;
 	u64 target;
@@ -929,20 +943,6 @@ static void kyber_completed_request(struct request *rq, u64 now)
 	put_cpu_ptr(kqd->cpu_latency);
 
 	timer_reduce(&kqd->timer, jiffies + HZ / 10);
-
-	rq_info = rq_get_info(rq);
-	if (rq_info) {
-		rcu_read_lock();
-		css = css_from_id(rq_info->id, &io_cgrp_subsys);
-		rcu_read_unlock();
-		kf = css_to_kf(css, rq->q);
-
-		spin_lock(&kf->lock);
-		kf->budget += rq_info->sectors;
-		spin_unlock(&kf->lock);
-
-		kfree(rq_info);
-	}
 }
 
 struct flush_kcq_data {
