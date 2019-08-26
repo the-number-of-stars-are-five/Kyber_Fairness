@@ -886,13 +886,12 @@ static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
 static struct kyber_rq_info *rq_get_info(struct request *rq)
 {
   printk("rq_get_info\n");
-  return rq->elv.priv[1];
+  return (struct kyber_rq_info *)rq->elv.priv[1];
 }
 
 static void rq_set_info(struct request *rq)
 {
   struct kyber_rq_info *rq_info;
-  printk("rq_set_info\n");
 
   if (!rq)
 	return;
@@ -900,11 +899,7 @@ static void rq_set_info(struct request *rq)
   rq_info = kmalloc(sizeof(*rq_info), GFP_KERNEL);
 
   rq_info->sectors = blk_rq_sectors(rq);
-
-  if (rq->bio)
-	rq_info->kf = blkg_to_kf(rq->bio->bi_blkg);
-  else
-	printk("no rq->bio\n");
+  rq_info->kf = blkg_to_kf(rq->bio->bi_blkg);
 
   rq->elv.priv[1] = rq_info;
 }
@@ -932,11 +927,12 @@ static void kyber_completed_request(struct request *rq, u64 now)
 
   timer_reduce(&kqd->timer, jiffies + HZ / 10);
 
-/*
-  if (rq) {
-	rq_info = rq_get_info(rq);
-	printk("[complete]elv.priv[1]: %d\n", rq_info->sectors);
+  rq_info = rq_get_info(rq);
 
+  if (rq_info) {
+    printk("[complete]elv.priv[1]: %d\n", rq_info->sectors);
+
+	/*
 	if (rq_info->kf) {
 	  kf = rq_info->kf;
 	  spin_lock(&kf->lock);
@@ -944,11 +940,9 @@ static void kyber_completed_request(struct request *rq, u64 now)
 	  printk("[complete]budget: %d -> %d\n", kf->budget-rq_info->sectors, kf->budget);
 	  spin_unlock(&kf->lock);
 	}
-	kfree(rq_info);
-  } else {
-	printk("[complete]no rq\n");
+	*/
+    kfree(rq_info);
   }
-*/
 }
 
 struct flush_kcq_data {
