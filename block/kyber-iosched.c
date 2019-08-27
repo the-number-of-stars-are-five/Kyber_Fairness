@@ -486,11 +486,10 @@ static void kyber_resize_domain(struct kyber_queue_data *kqd,
 	}
 }
 
-static void kyber_get_info(struct request_queue *q)
+static void kyber_print_info(struct request_queue *q)
 {
 	struct cgroup_subsys_state *css;
 	struct kyber_fairness *kf;
-	struct kyber_fairness_data *kfd;
 	int id;
 
 	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
@@ -891,31 +890,33 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 	}
 }
 
-static struct kyber_rq_info *rq_get_info(struct request *rq)
+static unsigned int rq_get_throtl_sectors(struct request *rq)
 {
-	if (!rq)
-		return NULL;
+	return (long)rq->end_io_data;
+}
 
-	return (struct kyber_rq_info *)rq->elv.priv[1];
+static struct kyber_fairness *rq_get_info(struct request *rq)
+{
+	//return (struct kyber_rq_info *)rq->elv.priv[1];
+	return rq->elv.priv[1];
 }
 
 static void rq_set_info(struct kyber_fairness *kf, struct request *rq)
 {
-	struct kyber_rq_info *rq_info;
+	//struct kyber_rq_info *rq_info;
 
 	if (!rq)
 		return;
 
-	if (!rq->bio)
-		return;
-
-	if (!rq->bio->bi_blkg)
-		return;
-
+/*
 	rq_info = kmalloc(sizeof(*rq_info), GFP_KERNEL);
 	rq_info->sectors = blk_rq_sectors(rq);
 	rq_info->id = kf->pd.plid;
 	rq->elv.priv[1] = rq_info;
+*/
+
+	rq->elv.priv[1] = kf;
+	rq->end_io_data = (void *)(long)blk_rq_sectors(rq);
 }
 
 static void kyber_finish_request(struct request *rq)
@@ -950,7 +951,7 @@ static void kyber_completed_request(struct request *rq, u64 now)
 	unsigned int sched_domain;
 	u64 target;
 	struct kyber_fairness *kf;
-	struct kyber_rq_info *rq_info;
+	//struct kyber_rq_info *rq_info;
 	struct cgroup_subsys_state *css;
 
 	sched_domain = kyber_sched_domain(rq->cmd_flags);
@@ -967,22 +968,24 @@ static void kyber_completed_request(struct request *rq, u64 now)
 
 	timer_reduce(&kqd->timer, jiffies + HZ / 10);
 
+/*
 	rq_info = rq_get_info(rq);
 	if (rq_info) {
-		rcu_read_lock();
-		css = css_from_id(rq_info->id, &io_cgrp_subsys);
-		rcu_read_unlock();
-
-		kf = css_to_kf(css, rq->q);
-
-		if (kf) {
-			spin_lock(&kf->lock);
-			kf->budget += rq_info->sectors;
-			spin_unlock(&kf->lock);
-		}
-
-		kfree(rq_info);
+	rcu_read_lock();
+	css = css_from_id(rq_get_info(rq), &io_cgrp_subsys);
+	rcu_read_unlock();
+*/
+	kf = rq_get_info(rq);
+	if (kf) {
+		//spin_lock(&kf->lock);
+		kf->budget += rq_get_throtl_sectors(rq);
+		//spin_unlock(&kf->lock);
 	}
+/*
+
+		//kfree(rq_info);
+	//}
+*/
 }
 
 struct flush_kcq_data {
@@ -1133,9 +1136,10 @@ out:
 
 	kf = kf_from_rq(rq);
 	if (kf) {
-		spin_lock(&kf->lock);
+		//spin_lock(&kf->lock);
 		kf->budget -= blk_rq_sectors(rq);
-		spin_unlock(&kf->lock);
+		//spin_unlock(&kf->lock);
+		printk("[%d] budget : %d -> %d\n", cgroup_id, kf->budget+blk_rq_sectors(rq), kf->budget);
 
 		rq_set_info(kf, rq);
 	}
