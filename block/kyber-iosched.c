@@ -195,11 +195,6 @@ struct kyber_hctx_data {
 	atomic_t wait_index[KYBER_NUM_DOMAINS];
 };
 
-struct kyber_rq_info {
-	unsigned int sectors;
-	unsigned int id;
-};
-
 struct kyber_fairness {
 	struct blkg_policy_data pd;
 	int budget;
@@ -382,7 +377,7 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	struct kyber_fairness *kf = pd_to_kf(pd);
 	struct kyber_fairness_data *kfd = blkcg_to_kfd(blkg->blkcg);
 
-	kf->budget = kfd->weight * 10;
+	kf->budget = kfd->weight;
 	spin_lock_init(&kf->lock);
 }
 
@@ -483,51 +478,6 @@ static void kyber_resize_domain(struct kyber_queue_data *kqd,
 		sbitmap_queue_resize(&kqd->domain_tokens[sched_domain], depth);
 		trace_kyber_adjust(kqd->q, kyber_domain_names[sched_domain],
 				depth);
-	}
-}
-
-static void kyber_print_info(struct request_queue *q)
-{
-	struct cgroup_subsys_state *css;
-	struct kyber_fairness *kf;
-	int id;
-
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		rcu_read_lock();
-		css = css_from_id(id, &io_cgrp_subsys);
-		rcu_read_unlock();
-
-		kf = css_to_kf(css, q);
-		if (!kf)
-			return;
-
-		printk("[%d] budget: %d\n", id, kf->budget);
-	}
-	printk("--------------------------------\n");
-}
-
-static void kyber_refill_budget(struct request_queue *q, int size)
-{
-	struct cgroup_subsys_state *css;
-	struct kyber_fairness *kf;
-	struct kyber_fairness_data *kfd;
-	int id;
-
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		rcu_read_lock();
-		css = css_from_id(id, &io_cgrp_subsys);
-		rcu_read_unlock();
-
-		kf = css_to_kf(css, q);
-		if (!kf)
-			return;
-
-		kfd = blkcg_to_kfd(css_to_blkcg(css));
-
-		spin_lock(&kf->lock);
-		kf->budget = kfd->weight * size;
-		spin_unlock(&kf->lock);
-		printk("[%d] refill: %d\n", id, kf->budget);
 	}
 }
 
@@ -897,23 +847,13 @@ static unsigned int rq_get_throtl_sectors(struct request *rq)
 
 static struct kyber_fairness *rq_get_info(struct request *rq)
 {
-	//return (struct kyber_rq_info *)rq->elv.priv[1];
 	return rq->elv.priv[1];
 }
 
 static void rq_set_info(struct kyber_fairness *kf, struct request *rq)
 {
-	//struct kyber_rq_info *rq_info;
-
 	if (!rq)
 		return;
-
-/*
-	rq_info = kmalloc(sizeof(*rq_info), GFP_KERNEL);
-	rq_info->sectors = blk_rq_sectors(rq);
-	rq_info->id = kf->pd.plid;
-	rq->elv.priv[1] = rq_info;
-*/
 
 	rq->elv.priv[1] = kf;
 	rq->end_io_data = (void *)(long)blk_rq_sectors(rq);
@@ -951,8 +891,6 @@ static void kyber_completed_request(struct request *rq, u64 now)
 	unsigned int sched_domain;
 	u64 target;
 	struct kyber_fairness *kf;
-	//struct kyber_rq_info *rq_info;
-	struct cgroup_subsys_state *css;
 
 	sched_domain = kyber_sched_domain(rq->cmd_flags);
 	if (sched_domain == KYBER_OTHER)
@@ -968,24 +906,12 @@ static void kyber_completed_request(struct request *rq, u64 now)
 
 	timer_reduce(&kqd->timer, jiffies + HZ / 10);
 
-/*
-	rq_info = rq_get_info(rq);
-	if (rq_info) {
-	rcu_read_lock();
-	css = css_from_id(rq_get_info(rq), &io_cgrp_subsys);
-	rcu_read_unlock();
-*/
 	kf = rq_get_info(rq);
 	if (kf) {
 		//spin_lock(&kf->lock);
 		kf->budget += rq_get_throtl_sectors(rq);
 		//spin_unlock(&kf->lock);
 	}
-/*
-
-		//kfree(rq_info);
-	//}
-*/
 }
 
 struct flush_kcq_data {
@@ -1109,7 +1035,20 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 	if (rq) {
 		nr = kyber_get_domain_token(kqd, khd, hctx);
 		if (nr >= 0) {
-			goto out;
+			khd->batching++;
+			rq_set_domain_token(rq, nr);
+			list_del_init(&rq->queuelist);
+
+			kf = kf_from_rq(rq);
+			if (kf) {
+				//spin_lock(&kf->lock);
+				kf->budget -= blk_rq_sectors(rq);
+				//spin_unlock(&kf->lock);
+				printk("[%d] budget : %d -> %d\n", cgroup_id, kf->budget+blk_rq_sectors(rq), kf->budget);
+
+				rq_set_info(kf, rq);
+			}
+			return rq;
 		} else {
 			trace_kyber_throttled(kqd->q,
 					kyber_domain_names[khd->cur_domain]);
@@ -1119,7 +1058,20 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 		if (nr >= 0) {
 			kyber_flush_busy_kcqs(khd, cgroup_id, khd->cur_domain, rqs);
 			rq = list_first_entry(rqs, struct request, queuelist);
-			goto out;
+			khd->batching++;
+			rq_set_domain_token(rq, nr);
+			list_del_init(&rq->queuelist);
+
+			kf = kf_from_rq(rq);
+			if (kf) {
+				//spin_lock(&kf->lock);
+				kf->budget -= blk_rq_sectors(rq);
+				//spin_unlock(&kf->lock);
+				printk("[%d] budget : %d -> %d\n", cgroup_id, kf->budget+blk_rq_sectors(rq), kf->budget);
+
+				rq_set_info(kf, rq);
+			}
+			return rq;
 		} else {
 			trace_kyber_throttled(kqd->q,
 					kyber_domain_names[khd->cur_domain]);
@@ -1128,23 +1080,6 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 	/* There were either no pending requests or no tokens. */
 	return NULL;
-
-out:
-	khd->batching++;
-	rq_set_domain_token(rq, nr);
-	list_del_init(&rq->queuelist);
-
-	kf = kf_from_rq(rq);
-	if (kf) {
-		//spin_lock(&kf->lock);
-		kf->budget -= blk_rq_sectors(rq);
-		//spin_unlock(&kf->lock);
-		printk("[%d] budget : %d -> %d\n", cgroup_id, kf->budget+blk_rq_sectors(rq), kf->budget);
-
-		rq_set_info(kf, rq);
-	}
-
-	return rq;
 }
 
 static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
