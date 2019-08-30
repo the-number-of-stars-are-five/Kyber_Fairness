@@ -239,8 +239,6 @@ static struct kyber_fairness *kf_from_rq(struct request *rq)
 		return NULL;
 	if (!rq->bio)
 		return NULL;
-	if (!rq->bio->bi_blkg)
-		return NULL;
 
 	return blkg_to_kf(rq->bio->bi_blkg);
 }
@@ -264,6 +262,17 @@ static struct kyber_fairness *css_to_kf(struct cgroup_subsys_state *css, struct 
 	kf = blkg_to_kf(blkg);
 
 	return kf;
+}
+
+static struct kyber_fairness *kf_from_id(int id, struct request_queue *q)
+{
+	struct cgroup_subsys_state *css;
+
+	rcu_read_lock();
+	css = css_from_id(id, &io_cgrp_subsys);
+	rcu_read_unlock();
+
+	return css_to_kf(css, q);
 }
 
 static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
@@ -888,9 +897,9 @@ static void kyber_completed_request(struct request *rq, u64 now)
 {
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
 	struct kyber_cpu_latency *cpu_latency;
+	struct kyber_fairness *kf;
 	unsigned int sched_domain;
 	u64 target;
-	struct kyber_fairness *kf;
 
 	sched_domain = kyber_sched_domain(rq->cmd_flags);
 	if (sched_domain == KYBER_OTHER)
@@ -908,9 +917,7 @@ static void kyber_completed_request(struct request *rq, u64 now)
 
 	kf = rq_get_info(rq);
 	if (kf) {
-		//spin_lock(&kf->lock);
 		kf->budget += rq_get_throtl_sectors(rq);
-		//spin_unlock(&kf->lock);
 	}
 }
 
@@ -1041,9 +1048,7 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 			kf = kf_from_rq(rq);
 			if (kf) {
-				//spin_lock(&kf->lock);
 				kf->budget -= blk_rq_sectors(rq);
-				//spin_unlock(&kf->lock);
 				printk("[%d] budget : %d -> %d\n", cgroup_id, kf->budget+blk_rq_sectors(rq), kf->budget);
 
 				rq_set_info(kf, rq);
@@ -1064,9 +1069,7 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 			kf = kf_from_rq(rq);
 			if (kf) {
-				//spin_lock(&kf->lock);
 				kf->budget -= blk_rq_sectors(rq);
-				//spin_unlock(&kf->lock);
 				printk("[%d] budget : %d -> %d\n", cgroup_id, kf->budget+blk_rq_sectors(rq), kf->budget);
 
 				rq_set_info(kf, rq);
@@ -1085,14 +1088,10 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
 {
 	struct kyber_fairness *kf;
-	struct cgroup_subsys_state *css;
 	struct kyber_hctx_data *khd = hctx->sched_data;
 	int domain;
 
-	rcu_read_lock();
-	css = css_from_id(id, &io_cgrp_subsys);
-	rcu_read_unlock();
-	kf = css_to_kf(css, hctx->queue);
+	kf = kf_from_id(id, hctx->queue);
 
 	if (!kf)
 		return -ERANGE;
@@ -1109,7 +1108,6 @@ static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
 
 static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 {
-	struct cgroup_subsys_state *css;
 	struct kyber_fairness *kf;
 	struct request_queue *q = hctx->queue;
 	int id;
@@ -1119,12 +1117,8 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 			case -ERANGE:
 				return 0;
 			case 1:
-				rcu_read_lock();
-				css = css_from_id(id, &io_cgrp_subsys);
-				rcu_read_unlock();
-
 				/* NEVER kf can't be NULL */
-				kf = css_to_kf(css, q);
+				kf = kf_from_id(id, q);
 				if (kf->budget > 0)
 					return id;
 			default:
@@ -1140,7 +1134,7 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 {
 	struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
 	struct kyber_hctx_data *khd = hctx->sched_data;
-	struct request *rq;
+	struct request *rq = NULL;
 	int i, cgroup_id;
 
 	spin_lock(&khd->lock);
@@ -1148,7 +1142,7 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	cgroup_id = kyber_choose_cgroup(hctx);
 
 	if (!cgroup_id)
-		goto nothing;
+		goto out;
 
 	/*
 	 * First, if we are still entitled to batch, try to dispatch a request
@@ -1181,8 +1175,6 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 			goto out;
 	}
 
-nothing:
-	rq = NULL;
 out:
 	spin_unlock(&khd->lock);
 
