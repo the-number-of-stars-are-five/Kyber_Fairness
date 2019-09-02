@@ -871,8 +871,15 @@ static void rq_set_info(struct kyber_fairness *kf, struct request *rq)
 static void kyber_finish_request(struct request *rq)
 {
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
+	struct kyber_fairness *kf;
 
 	rq_clear_domain_token(kqd, rq);
+
+	kf = rq_get_info(rq);
+	if (kf) {
+		kf->budget += rq_get_throtl_sectors(rq);
+		rq->elv.priv[1] = NULL;
+	}
 }
 
 static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
@@ -918,6 +925,7 @@ static void kyber_completed_request(struct request *rq, u64 now)
 	kf = rq_get_info(rq);
 	if (kf) {
 		kf->budget += rq_get_throtl_sectors(rq);
+		rq->elv.priv[1] = NULL;
 	}
 }
 
