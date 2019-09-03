@@ -1125,7 +1125,7 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 			case -ERANGE:
 				return 0;
 			case 1:
-				/* NEVER kf can't be NULL */
+				/* kf NEVER can't be NULL */
 				kf = kf_from_id(id, q);
 				if (kf->budget > 0)
 					return id;
@@ -1134,7 +1134,7 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 		}
 	}
 
-	/* NEVER TOUCH THIS LINE */
+	/* CAN'T TOUCH THIS LINE */
 	return -ERANGE;
 }
 
@@ -1147,10 +1147,9 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 
 	spin_lock(&khd->lock);
 
-	cgroup_id = kyber_choose_cgroup(hctx);
-
-	if (!cgroup_id)
-		goto out;
+	do {
+		cgroup_id = kyber_choose_cgroup(hctx);
+	} while (!cgroup_id);
 
 	/*
 	 * First, if we are still entitled to batch, try to dispatch a request
@@ -1208,8 +1207,8 @@ static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 }
 
 #define KYBER_LAT_SHOW_STORE(domain, name)				\
-	static ssize_t kyber_##name##_lat_show(struct elevator_queue *e,	\
-			char *page)			\
+static ssize_t kyber_##name##_lat_show(struct elevator_queue *e,	\
+		char *page)			\
 {									\
 	struct kyber_queue_data *kqd = e->elevator_data;		\
 	\
@@ -1245,7 +1244,7 @@ static struct elv_fs_entry kyber_sched_attrs[] = {
 
 #ifdef CONFIG_BLK_DEBUG_FS
 #define KYBER_DEBUGFS_DOMAIN_ATTRS(cgroup, domain, name)			\
-	static int kyber_##name##_tokens_show(void *data, struct seq_file *m)	\
+static int kyber_##name##_tokens_show(void *data, struct seq_file *m)	\
 {									\
 	struct request_queue *q = data;					\
 	struct kyber_queue_data *kqd = q->elevator->elevator_data;	\
@@ -1298,10 +1297,15 @@ static int kyber_##name##_waiting_show(void *data, struct seq_file *m)	\
 	seq_printf(m, "%d\n", !list_empty_careful(&wait->entry));	\
 	return 0;							\
 }
-	KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_READ, read)
-	KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_WRITE, write)
-	KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_DISCARD, discard)
-KYBER_DEBUGFS_DOMAIN_ATTRS(1, KYBER_OTHER, other)
+for (int i=1; i<KYBER_MAX_CGROUP; i++) {
+	if (!css_from_id(i, &io_cgrp_subsys))
+		return;
+
+	KYBER_DEBUGFS_DOMAIN_ATTRS(i, KYBER_READ, read)
+	KYBER_DEBUGFS_DOMAIN_ATTRS(i, KYBER_WRITE, write)
+	KYBER_DEBUGFS_DOMAIN_ATTRS(i, KYBER_DISCARD, discard)
+	KYBER_DEBUGFS_DOMAIN_ATTRS(i, KYBER_OTHER, other)
+}
 #undef KYBER_DEBUGFS_DOMAIN_ATTRS
 
 static int kyber_async_depth_show(void *data, struct seq_file *m)
