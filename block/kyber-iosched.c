@@ -197,7 +197,7 @@ struct kyber_hctx_data {
 
 struct kyber_fairness {
 	struct blkg_policy_data pd;
-	int budget;
+	atomic_t budget;
 	spinlock_t lock;
 };
 
@@ -293,6 +293,8 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 
 	kfd->weight = (unsigned int)val;
 
+	
+
 	return ret;
 }
 
@@ -386,7 +388,7 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	struct kyber_fairness *kf = pd_to_kf(pd);
 	struct kyber_fairness_data *kfd = blkcg_to_kfd(blkg->blkcg);
 
-	kf->budget = kfd->weight;
+	atomic_set(&kf->budget, kfd->weight);
 	spin_lock_init(&kf->lock);
 }
 
@@ -877,7 +879,7 @@ static void kyber_finish_request(struct request *rq)
 
 	kf = rq_get_info(rq);
 	if (kf) {
-		kf->budget += rq_get_throtl_sectors(rq);
+        atomic_add(rq_get_throtl_sectors(rq), &kf->budget);
 		rq->elv.priv[1] = NULL;
 	}
 }
@@ -924,7 +926,7 @@ static void kyber_completed_request(struct request *rq, u64 now)
 
 	kf = rq_get_info(rq);
 	if (kf) {
-		kf->budget += rq_get_throtl_sectors(rq);
+       	atomic_add(rq_get_throtl_sectors(rq), &kf->budget);
 		rq->elv.priv[1] = NULL;
 	}
 }
@@ -1056,9 +1058,8 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 			kf = kf_from_rq(rq);
 			if (kf) {
-				kf->budget -= blk_rq_sectors(rq);
-				printk("[%d] budget : %d -> %d\n", cgroup_id, kf->budget+blk_rq_sectors(rq), kf->budget);
-
+           		atomic_sub(blk_rq_sectors(rq), &kf->budget);
+				printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->budget)+blk_rq_sectors(rq), atomic_read(&kf->budget));
 				rq_set_info(kf, rq);
 			}
 			return rq;
@@ -1077,9 +1078,8 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 			kf = kf_from_rq(rq);
 			if (kf) {
-				kf->budget -= blk_rq_sectors(rq);
-				printk("[%d] budget : %d -> %d\n", cgroup_id, kf->budget+blk_rq_sectors(rq), kf->budget);
-
+            	atomic_sub(blk_rq_sectors(rq), &kf->budget);
+				printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->budget)+blk_rq_sectors(rq), atomic_read(&kf->budget));
 				rq_set_info(kf, rq);
 			}
 			return rq;
@@ -1127,7 +1127,7 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 			case 1:
 				/* kf NEVER can't be NULL */
 				kf = kf_from_id(id, q);
-				if (kf->budget > 0)
+				if (atomic_read(&kf->budget) > 0)
 					return id;
 			default:
 				break;
@@ -1243,7 +1243,7 @@ static struct elv_fs_entry kyber_sched_attrs[] = {
 #undef KYBER_LAT_ATTR
 
 #ifdef CONFIG_BLK_DEBUG_FS
-#define KYBER_DEBUGFS_DOMAIN_ATTRS(cgroup, domain, name)			\
+#define KYBER_DEBUGFS_DOMAIN_ATTRS(domain, name)			\
 static int kyber_##name##_tokens_show(void *data, struct seq_file *m)	\
 {									\
 	struct request_queue *q = data;					\
@@ -1254,22 +1254,22 @@ static int kyber_##name##_tokens_show(void *data, struct seq_file *m)	\
 }									\
 \
 static void *kyber_##name##_rqs_start(struct seq_file *m, loff_t *pos)	\
-__acquires(&khd->lock)						\
+__acquires(&khd->lock)							\
 {									\
 	struct blk_mq_hw_ctx *hctx = m->private;			\
 	struct kyber_hctx_data *khd = hctx->sched_data;			\
 	\
 	spin_lock(&khd->lock);						\
-	return seq_list_start(&khd->rqs[cgroup][domain], *pos);			\
+	return seq_list_start(&khd->rqs[1][domain], *pos);		\
 }									\
 \
 static void *kyber_##name##_rqs_next(struct seq_file *m, void *v,	\
-		loff_t *pos)			\
+		loff_t *pos)						\
 {									\
 	struct blk_mq_hw_ctx *hctx = m->private;			\
 	struct kyber_hctx_data *khd = hctx->sched_data;			\
 	\
-	return seq_list_next(v, &khd->rqs[cgroup][domain], pos);		\
+	return seq_list_next(v, &khd->rqs[1][domain], pos);		\
 }									\
 \
 static void kyber_##name##_rqs_stop(struct seq_file *m, void *v)	\
@@ -1296,16 +1296,12 @@ static int kyber_##name##_waiting_show(void *data, struct seq_file *m)	\
 	\
 	seq_printf(m, "%d\n", !list_empty_careful(&wait->entry));	\
 	return 0;							\
-}
-for (int i=1; i<KYBER_MAX_CGROUP; i++) {
-	if (!css_from_id(i, &io_cgrp_subsys))
-		return;
+}									\
 
-	KYBER_DEBUGFS_DOMAIN_ATTRS(i, KYBER_READ, read)
-	KYBER_DEBUGFS_DOMAIN_ATTRS(i, KYBER_WRITE, write)
-	KYBER_DEBUGFS_DOMAIN_ATTRS(i, KYBER_DISCARD, discard)
-	KYBER_DEBUGFS_DOMAIN_ATTRS(i, KYBER_OTHER, other)
-}
+KYBER_DEBUGFS_DOMAIN_ATTRS(KYBER_READ, read)
+KYBER_DEBUGFS_DOMAIN_ATTRS(KYBER_WRITE, write)
+KYBER_DEBUGFS_DOMAIN_ATTRS(KYBER_DISCARD, discard)
+KYBER_DEBUGFS_DOMAIN_ATTRS(KYBER_OTHER, other)
 #undef KYBER_DEBUGFS_DOMAIN_ATTRS
 
 static int kyber_async_depth_show(void *data, struct seq_file *m)
