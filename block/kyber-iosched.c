@@ -279,8 +279,9 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 		struct cftype *cftype,
 		u64 val)
 {
-	struct blkcg *blkcg;
-	struct kyber_fairness_data *kfd;
+	struct blkcg *blkcg = css_to_blkcg(css);
+	struct blkcg_gq *blkg;
+	struct kyber_fairness_data *kfd = blkcg_to_kfd(blkcg);
 	int ret = -ERANGE;
 
 	if (val < KYBER_MIN_WEIGHT || val > KYBER_MAX_WEIGHT)
@@ -288,11 +289,17 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 
 	ret = 0;
 
-	blkcg = css_to_blkcg(css);
-	kfd = blkcg_to_kfd(blkcg);
-
+	spin_lock_irq(&blkcg->lock);
 	kfd->weight = (unsigned int)val;
+	
+	hlist_for_each_entry(blkg, &blkcg->blkg_list, blkcg_node) {
+		struct kyber_fairness *kf = blkg_to_kf(blkg);
 
+		if (kf) {
+			atomic_set(&kf->budget, kfd->weight);
+		}
+	}		
+	spin_unlock_irq(&blkcg->lock);
 	
 
 	return ret;
