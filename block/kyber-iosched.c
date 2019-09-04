@@ -204,6 +204,7 @@ struct kyber_fairness {
 struct kyber_fairness_data {
 	struct blkcg_policy_data pd;
 	unsigned int weight;
+	struct kyber_fairness *kf;
 };
 
 static struct blkcg_policy blkcg_policy_kyber;
@@ -292,8 +293,10 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 	kfd = blkcg_to_kfd(blkcg);
 
 	kfd->weight = (unsigned int)val;
-
-	
+	if (kfd->kf) {
+		atomic_set(&kfd->kf->budget, kfd->weight);
+		printk("budget change\n");
+	}
 
 	return ret;
 }
@@ -390,6 +393,7 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 
 	atomic_set(&kf->budget, kfd->weight);
 	spin_lock_init(&kf->lock);
+	kfd->kf = kf;
 }
 
 static void kyber_pd_free(struct blkg_policy_data *pd)
@@ -1059,7 +1063,7 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 			kf = kf_from_rq(rq);
 			if (kf) {
            		atomic_sub(blk_rq_sectors(rq), &kf->budget);
-				printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->budget)+blk_rq_sectors(rq), atomic_read(&kf->budget));
+				//printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->budget)+blk_rq_sectors(rq), atomic_read(&kf->budget));
 				rq_set_info(kf, rq);
 			}
 			return rq;
@@ -1079,7 +1083,7 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 			kf = kf_from_rq(rq);
 			if (kf) {
             	atomic_sub(blk_rq_sectors(rq), &kf->budget);
-				printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->budget)+blk_rq_sectors(rq), atomic_read(&kf->budget));
+				//printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->budget)+blk_rq_sectors(rq), atomic_read(&kf->budget));
 				rq_set_info(kf, rq);
 			}
 			return rq;
