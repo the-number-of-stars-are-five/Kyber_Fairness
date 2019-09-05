@@ -300,7 +300,7 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 		}
 	}		
 	spin_unlock_irq(&blkcg->lock);
-	
+
 
 	return ret;
 }
@@ -414,8 +414,8 @@ static struct blkcg_policy blkcg_policy_kyber = {
 	.cpd_free_fn		= kyber_cpd_free,
 
 	.pd_alloc_fn		= kyber_pd_alloc,
-	.pd_init_fn			= kyber_pd_init,
-	.pd_free_fn			= kyber_pd_free,
+	.pd_init_fn		= kyber_pd_init,
+	.pd_free_fn		= kyber_pd_free,
 };
 
 static unsigned int kyber_sched_domain(unsigned int op)
@@ -680,9 +680,8 @@ static void kyber_exit_sched(struct elevator_queue *e)
 	for (i = 0; i < KYBER_NUM_DOMAINS; i++)
 		sbitmap_queue_free(&kqd->domain_tokens[i]);
 	free_percpu(kqd->cpu_latency);
-	kfree(kqd);
-
 	blkcg_deactivate_policy(kqd->q, &blkcg_policy_kyber);
+	kfree(kqd);
 }
 
 static void kyber_ctx_queue_init(struct kyber_ctx_queue *kcq)
