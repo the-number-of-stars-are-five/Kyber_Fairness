@@ -181,6 +181,7 @@ struct kyber_queue_data {
 
 	/* Target latencies in nanoseconds. */
 	u64 latency_targets[KYBER_OTHER];
+	u64 last_refill_time;
 };
 
 struct kyber_hctx_data {
@@ -199,7 +200,7 @@ struct kyber_fairness {
 	struct blkg_policy_data pd;
 	unsigned int max_budget;
 	atomic_t cur_budget;
-	spinlock_t lock;
+	bool idle;
 };
 
 struct kyber_fairness_data {
@@ -395,7 +396,7 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 
 	kf->max_budget = kfd->weight;
 	atomic_set(&kf->cur_budget, kfd->weight);
-	spin_lock_init(&kf->lock);
+	kf->idle = true;
 }
 
 static void kyber_pd_free(struct blkg_policy_data *pd)
@@ -627,6 +628,8 @@ static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 
 	shift = kyber_sched_tags_shift(q);
 	kqd->async_depth = (1U << shift) * KYBER_ASYNC_PERCENT / 100U;
+
+	kqd->last_refill_time = ktime_get_ns();
 
 	return kqd;
 
@@ -915,29 +918,10 @@ static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 	return false;
 }
 
-static void kyber_refill_budget(struct blk_mq_hw_ctx *hctx)
-{
-	struct request_queue *q = hctx->queue;
-	struct kyber_fairness *kf;
-	int id;
-	
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		kf = kf_from_id(id, q);
-
-		if (!kf)
-			return;
-
-		atomic_set(&kf->cur_budget, kf->max_budget);
-	}
-}
-
 static void kyber_finish_request(struct request *rq)
 {
-	struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
-	struct request_queue *q = rq->q;
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
-	struct kyber_fairness *kf;
-	int id;
+	//struct kyber_fairness *kf;
 
 	rq_clear_domain_token(kqd, rq);
 
@@ -948,29 +932,6 @@ static void kyber_finish_request(struct request *rq)
 		rq->elv.priv[1] = NULL;
 	}
 */
-
-	kf = rq_get_info(rq);
-
-	if (!kf)
-		return;
-
-	if (atomic_read(&kf->cur_budget) <= 0) {
-		for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-			if (!kf_from_id(id, q) && kf_from_id(id, q) != kf) {
-				switch (kyber_is_active(id, hctx)) {
-					case -ERANGE:
-						id = KYBER_MAX_CGROUP;
-						break;
-					case 1:
-						if (atomic_read(&kf_from_id(id, q)->cur_budget) > 0)
-							return;
-					default:
-						break;
-				}
-			}
-		}
-		kyber_refill_budget(hctx);
-	}
 }
 
 static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
@@ -995,7 +956,6 @@ static void kyber_completed_request(struct request *rq, u64 now)
 {
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
 	struct kyber_cpu_latency *cpu_latency;
-	struct kyber_fairness *kf;
 	unsigned int sched_domain;
 	u64 target;
 
@@ -1200,12 +1160,33 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 	return -ERANGE;
 }
 
+static void kyber_refill_budget(struct request_queue *q)
+{
+	struct kyber_fairness *kf;
+	int id;
+	
+	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+		kf = kf_from_id(id, q);
+
+		if (!kf)
+			return;
+
+		atomic_set(&kf->cur_budget, kf->max_budget);
+	}
+}
+
 static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 {
 	struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
 	struct kyber_hctx_data *khd = hctx->sched_data;
 	struct request *rq = NULL;
-	int i, cgroup_id;
+	int cgroup_id;
+	int i;
+
+	if (ktime_get_ns() - kqd->last_refill_time > kyber_latency_targets[KYBER_WRITE]) {
+		kyber_refill_budget(kqd->q);
+		kqd->last_refill_time = ktime_get_ns();
+	}
 
 	spin_lock(&khd->lock);
 
