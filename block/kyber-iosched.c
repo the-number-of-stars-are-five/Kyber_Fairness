@@ -197,7 +197,8 @@ struct kyber_hctx_data {
 
 struct kyber_fairness {
 	struct blkg_policy_data pd;
-	atomic_t budget;
+	unsigned int max_budget;
+	atomic_t cur_budget;
 	spinlock_t lock;
 };
 
@@ -291,16 +292,13 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 
 	spin_lock_irq(&blkcg->lock);
 	kfd->weight = (unsigned int)val;
-	
 	hlist_for_each_entry(blkg, &blkcg->blkg_list, blkcg_node) {
 		struct kyber_fairness *kf = blkg_to_kf(blkg);
 
-		if (kf) {
-			atomic_set(&kf->budget, kfd->weight);
-		}
+		if (kf)
+			atomic_set(&kf->cur_budget, kfd->weight);
 	}		
 	spin_unlock_irq(&blkcg->lock);
-
 
 	return ret;
 }
@@ -395,7 +393,8 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	struct kyber_fairness *kf = pd_to_kf(pd);
 	struct kyber_fairness_data *kfd = blkcg_to_kfd(blkg->blkcg);
 
-	atomic_set(&kf->budget, kfd->weight);
+	kf->max_budget = kfd->weight;
+	atomic_set(&kf->cur_budget, kfd->weight);
 	spin_lock_init(&kf->lock);
 }
 
@@ -414,8 +413,8 @@ static struct blkcg_policy blkcg_policy_kyber = {
 	.cpd_free_fn		= kyber_cpd_free,
 
 	.pd_alloc_fn		= kyber_pd_alloc,
-	.pd_init_fn		= kyber_pd_init,
-	.pd_free_fn		= kyber_pd_free,
+	.pd_init_fn			= kyber_pd_init,
+	.pd_free_fn			= kyber_pd_free,
 };
 
 static unsigned int kyber_sched_domain(unsigned int op)
@@ -680,6 +679,7 @@ static void kyber_exit_sched(struct elevator_queue *e)
 	for (i = 0; i < KYBER_NUM_DOMAINS; i++)
 		sbitmap_queue_free(&kqd->domain_tokens[i]);
 	free_percpu(kqd->cpu_latency);
+
 	blkcg_deactivate_policy(kqd->q, &blkcg_policy_kyber);
 	kfree(kqd);
 }
@@ -876,17 +876,86 @@ static void rq_set_info(struct kyber_fairness *kf, struct request *rq)
 	rq->end_io_data = (void *)(long)blk_rq_sectors(rq);
 }
 
+static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
+{
+	struct kyber_fairness *kf;
+	struct kyber_hctx_data *khd = hctx->sched_data;
+	int domain;
+
+	kf = kf_from_id(id, hctx->queue);
+
+	if (!kf)
+		return -ERANGE;
+
+	for (domain = 0; domain < KYBER_NUM_DOMAINS; domain++) {
+		if (!list_empty_careful(&khd->rqs[id][domain]) ||
+				sbitmap_any_bit_set(&khd->kcq_map[id][domain])) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+static void kyber_refill_budget(struct blk_mq_hw_ctx *hctx)
+{
+	struct request_queue *q = hctx->queue;
+	struct kyber_fairness *kf;
+	int id;
+	
+	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+		kf = kf_from_id(id, q);
+
+		if (!kf)
+			return;
+
+		atomic_set(&kf->cur_budget, kf->max_budget);
+	}
+}
+
 static void kyber_finish_request(struct request *rq)
 {
+	struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
+	struct request_queue *q = rq->q;
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
 	struct kyber_fairness *kf;
+	int id;
 
 	rq_clear_domain_token(kqd, rq);
 
+/*
 	kf = rq_get_info(rq);
 	if (kf) {
-        atomic_add(rq_get_throtl_sectors(rq), &kf->budget);
+        atomic_add(rq_get_throtl_sectors(rq), &kf->cur_budget);
 		rq->elv.priv[1] = NULL;
+	}
+*/
+
+	kf = rq_get_info(rq);
+
+	if (!kf)
+		return;
+
+	if (atomic_read(&kf->cur_budget) <= 0) {
+		/*for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+			if (kf_from_id(id, q) && kf_from_id(id, q) != kf) {
+				switch (kyber_is_active(id, hctx)) {
+					case -ERANGE:
+						id = KYBER_MAX_CGROUP;
+						break;
+					case 1:
+						printk("[%d] : active\n", id);
+						if (atomic_read(&kf_from_id(id, q)->cur_budget) > 0) {
+							printk("[%d] : active and 0\n", id);
+							return;
+						}
+					default:
+						printk("[%d] : budget is 0 or no active\n", id);
+						break;
+				}
+			}
+		}*/
+		kyber_refill_budget(hctx);
 	}
 }
 
@@ -929,12 +998,6 @@ static void kyber_completed_request(struct request *rq, u64 now)
 	put_cpu_ptr(kqd->cpu_latency);
 
 	timer_reduce(&kqd->timer, jiffies + HZ / 10);
-
-	kf = rq_get_info(rq);
-	if (kf) {
-       	atomic_add(rq_get_throtl_sectors(rq), &kf->budget);
-		rq->elv.priv[1] = NULL;
-	}
 }
 
 struct flush_kcq_data {
@@ -1064,8 +1127,8 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 			kf = kf_from_rq(rq);
 			if (kf) {
-           		atomic_sub(blk_rq_sectors(rq), &kf->budget);
-				printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->budget)+blk_rq_sectors(rq), atomic_read(&kf->budget));
+           		atomic_sub(blk_rq_sectors(rq), &kf->cur_budget);
+				printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->cur_budget)+blk_rq_sectors(rq), atomic_read(&kf->cur_budget));
 				rq_set_info(kf, rq);
 			}
 			return rq;
@@ -1084,8 +1147,8 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 			kf = kf_from_rq(rq);
 			if (kf) {
-            	atomic_sub(blk_rq_sectors(rq), &kf->budget);
-				printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->budget)+blk_rq_sectors(rq), atomic_read(&kf->budget));
+            	atomic_sub(blk_rq_sectors(rq), &kf->cur_budget);
+				printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->cur_budget)+blk_rq_sectors(rq), atomic_read(&kf->cur_budget));
 				rq_set_info(kf, rq);
 			}
 			return rq;
@@ -1097,27 +1160,6 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 	/* There were either no pending requests or no tokens. */
 	return NULL;
-}
-
-static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
-{
-	struct kyber_fairness *kf;
-	struct kyber_hctx_data *khd = hctx->sched_data;
-	int domain;
-
-	kf = kf_from_id(id, hctx->queue);
-
-	if (!kf)
-		return -ERANGE;
-
-	for (domain = 0; domain < KYBER_NUM_DOMAINS; domain++) {
-		if (!list_empty_careful(&khd->rqs[id][domain]) ||
-				sbitmap_any_bit_set(&khd->kcq_map[id][domain])) {
-			return 1;
-		}
-	}
-
-	return 0;
 }
 
 static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
@@ -1133,7 +1175,7 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 			case 1:
 				/* kf NEVER can't be NULL */
 				kf = kf_from_id(id, q);
-				if (atomic_read(&kf->budget) > 0)
+				if (atomic_read(&kf->cur_budget) > 0)
 					return id;
 			default:
 				break;
@@ -1144,6 +1186,73 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 	return -ERANGE;
 }
 
+static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
+{
+	/*if(kyber_choose_cgroup(hctx) > 0)
+		return true;
+	return false;*/
+	
+	int id;
+
+	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+		switch (kyber_is_active(id, hctx)) {
+			case -ERANGE:
+				return false;
+			case 1:
+				return true;
+			default:
+				break;
+		}
+	}
+
+	return false;
+	
+}
+
+/*static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
+{
+	struct kyber_fairness *kf;
+	struct request_queue *q = hctx->queue;
+	int id;
+	static int pre_id = 0;
+	int count = 1;
+
+	for (id = pre_id+1; id < KYBER_MAX_CGROUP; id++, count++) {
+		switch (kyber_is_active(id, hctx)) {
+			case -ERANGE:
+				return 0;
+			case 1:
+				// kf NEVER can't be NULL 
+				kf = kf_from_id(id, q);
+				if (atomic_read(&kf->cur_budget) > 0) {
+					pre_id = id;
+					return id;
+				}
+			default:
+				break;
+		}
+	}
+
+	for (id = 1; count < KYBER_MAX_CGROUP; id++, count++) {
+		switch (kyber_is_active(id, hctx)) {
+			case -ERANGE:
+				return 0;
+			case 1:
+				// kf NEVER can't be NULL 
+				kf = kf_from_id(id, q);
+				if (atomic_read(&kf->cur_budget) > 0) {
+					pre_id = id;
+					return id;
+				}
+			default:
+				break;
+		}
+	}
+
+	// CAN'T TOUCH THIS LINE 
+	return -ERANGE;
+}*/
+
 static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 {
 	struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
@@ -1152,7 +1261,7 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	int i, cgroup_id;
 
 	spin_lock(&khd->lock);
-
+	
 	do {
 		cgroup_id = kyber_choose_cgroup(hctx);
 	} while (!cgroup_id);
@@ -1192,24 +1301,6 @@ out:
 	spin_unlock(&khd->lock);
 
 	return rq;
-}
-
-static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
-{
-	int id;
-
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		switch (kyber_is_active(id, hctx)) {
-			case -ERANGE:
-				return false;
-			case 1:
-				return true;
-			default:
-				break;
-		}
-	}
-
-	return false;
 }
 
 #define KYBER_LAT_SHOW_STORE(domain, name)				\
