@@ -13,6 +13,8 @@
 #include <linux/module.h>
 #include <linux/sbitmap.h>
 #include <linux/blk-cgroup.h>
+#include <linux/delay.h>
+#include <linux/timer.h>
 
 #include "blk.h"
 #include "blk-mq.h"
@@ -27,6 +29,7 @@
 #define KYBER_MAX_WEIGHT		1000
 #define KYBER_WEIGHT_LEGACY_DFL	100
 #define KYBER_MAX_CGROUP		100
+#define KYBER_IDLE_TIME			1 * NSEC_PER_MSEC
 
 /*
  * Scheduling domains: the device is divided into multiple domains based on the
@@ -199,7 +202,7 @@ struct kyber_fairness {
 	struct blkg_policy_data pd;
 	unsigned int max_budget;
 	atomic_t cur_budget;
-	spinlock_t lock;
+	u64 act_time;
 };
 
 struct kyber_fairness_data {
@@ -296,7 +299,7 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 		struct kyber_fairness *kf = blkg_to_kf(blkg);
 
 		if (kf)
-			atomic_set(&kf->cur_budget, kfd->weight);
+			kf->max_budget = kfd->weight;
 	}		
 	spin_unlock_irq(&blkcg->lock);
 
@@ -395,7 +398,6 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 
 	kf->max_budget = kfd->weight;
 	atomic_set(&kf->cur_budget, kfd->weight);
-	spin_lock_init(&kf->lock);
 }
 
 static void kyber_pd_free(struct blkg_policy_data *pd)
@@ -882,6 +884,7 @@ static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
 	struct kyber_hctx_data *khd = hctx->sched_data;
 	int domain;
 
+
 	kf = kf_from_id(id, hctx->queue);
 
 	if (!kf)
@@ -890,12 +893,34 @@ static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
 	for (domain = 0; domain < KYBER_NUM_DOMAINS; domain++) {
 		if (!list_empty_careful(&khd->rqs[id][domain]) ||
 				sbitmap_any_bit_set(&khd->kcq_map[id][domain])) {
+			kf->act_time = ktime_get_ns();
 			return 1;
 		}
 	}
 
 	return 0;
 }
+
+static bool kyber_is_idle(int id, struct blk_mq_hw_ctx *hctx)
+{
+	struct request_queue *q = hctx->queue;
+	struct kyber_fairness *kf = kf_from_id(id, q);
+	u64 time, cur_time;
+      
+       	if(!kf)
+		return true;
+
+	time = kf->act_time;
+	cur_time = ktime_get_ns();
+	if (kyber_is_active(id, hctx)) {
+		return false;
+	}
+	else if (cur_time - time < KYBER_IDLE_TIME) {
+		return false;
+	}
+	return true;
+}
+
 
 static void kyber_refill_budget(struct blk_mq_hw_ctx *hctx)
 {
@@ -911,52 +936,52 @@ static void kyber_refill_budget(struct blk_mq_hw_ctx *hctx)
 
 		atomic_set(&kf->cur_budget, kf->max_budget);
 	}
+	//blk_mq_run_hw_queue(hctx, true);
 }
+
+static bool kyber_try_refill(struct kyber_fairness *kf, struct blk_mq_hw_ctx* hctx)
+{
+	struct request_queue* q = hctx->queue;
+	int id;
+
+	if (!kf)
+		return true; /* cannot try refill */	
+
+	if (atomic_read(&kf->cur_budget) <= 0) {
+		for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+			if (!kf_from_id(id, q))
+			       break;
+			if (kf_from_id(id, q) != kf) {
+				if (!kyber_is_idle(id, hctx)) {
+					if (atomic_read(&kf_from_id(id, q)->cur_budget) > 0) {
+						return false;
+					}
+
+				}
+			}
+		}
+		printk("refill");
+		kyber_refill_budget(hctx);
+		return true;
+	}
+	return true; /* not need to refill */
+
+}	
 
 static void kyber_finish_request(struct request *rq)
 {
 	struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
-	struct request_queue *q = rq->q;
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
-	struct kyber_fairness *kf;
-	int id;
+	struct kyber_fairness *kf = rq_get_info(rq);
+	bool refill = false;
 
 	rq_clear_domain_token(kqd, rq);
 
-/*
-	kf = rq_get_info(rq);
-	if (kf) {
-        atomic_add(rq_get_throtl_sectors(rq), &kf->cur_budget);
-		rq->elv.priv[1] = NULL;
-	}
-*/
-
-	kf = rq_get_info(rq);
-
-	if (!kf)
-		return;
-
-	if (atomic_read(&kf->cur_budget) <= 0) {
-		/*for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-			if (kf_from_id(id, q) && kf_from_id(id, q) != kf) {
-				switch (kyber_is_active(id, hctx)) {
-					case -ERANGE:
-						id = KYBER_MAX_CGROUP;
-						break;
-					case 1:
-						printk("[%d] : active\n", id);
-						if (atomic_read(&kf_from_id(id, q)->cur_budget) > 0) {
-							printk("[%d] : active and 0\n", id);
-							return;
-						}
-					default:
-						printk("[%d] : budget is 0 or no active\n", id);
-						break;
-				}
-			}
-		}*/
-		kyber_refill_budget(hctx);
-	}
+	refill = kyber_try_refill(kf, hctx);
+	while (!refill) {
+		mdelay(2); /* delay 2ms = 2*KYBER_IDLE_TIME */
+		refill = kyber_try_refill(kf, hctx);
+	} 
 }
 
 static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
@@ -981,7 +1006,6 @@ static void kyber_completed_request(struct request *rq, u64 now)
 {
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
 	struct kyber_cpu_latency *cpu_latency;
-	struct kyber_fairness *kf;
 	unsigned int sched_domain;
 	u64 target;
 
@@ -1108,6 +1132,7 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 	rqs = &khd->rqs[cgroup_id][khd->cur_domain];
 
+
 	/*
 	 * If we already have a flushed request, then we just need to get a
 	 * token for it. Otherwise, if there are pending requests in the kcqs,
@@ -1188,10 +1213,6 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 
 static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 {
-	/*if(kyber_choose_cgroup(hctx) > 0)
-		return true;
-	return false;*/
-	
 	int id;
 
 	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
@@ -1206,52 +1227,7 @@ static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 	}
 
 	return false;
-	
 }
-
-/*static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
-{
-	struct kyber_fairness *kf;
-	struct request_queue *q = hctx->queue;
-	int id;
-	static int pre_id = 0;
-	int count = 1;
-
-	for (id = pre_id+1; id < KYBER_MAX_CGROUP; id++, count++) {
-		switch (kyber_is_active(id, hctx)) {
-			case -ERANGE:
-				return 0;
-			case 1:
-				// kf NEVER can't be NULL 
-				kf = kf_from_id(id, q);
-				if (atomic_read(&kf->cur_budget) > 0) {
-					pre_id = id;
-					return id;
-				}
-			default:
-				break;
-		}
-	}
-
-	for (id = 1; count < KYBER_MAX_CGROUP; id++, count++) {
-		switch (kyber_is_active(id, hctx)) {
-			case -ERANGE:
-				return 0;
-			case 1:
-				// kf NEVER can't be NULL 
-				kf = kf_from_id(id, q);
-				if (atomic_read(&kf->cur_budget) > 0) {
-					pre_id = id;
-					return id;
-				}
-			default:
-				break;
-		}
-	}
-
-	// CAN'T TOUCH THIS LINE 
-	return -ERANGE;
-}*/
 
 static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 {
@@ -1261,7 +1237,7 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	int i, cgroup_id;
 
 	spin_lock(&khd->lock);
-	
+
 	do {
 		cgroup_id = kyber_choose_cgroup(hctx);
 	} while (!cgroup_id);
