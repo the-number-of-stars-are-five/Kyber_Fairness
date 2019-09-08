@@ -27,6 +27,8 @@
 #define KYBER_MAX_WEIGHT		1000
 #define KYBER_WEIGHT_LEGACY_DFL	100
 #define KYBER_MAX_CGROUP		100
+#define KYBER_REFILL_TIME		10//ms
+#define KYBER_SCALE_FACTOR		10
 
 /*
  * Scheduling domains: the device is divided into multiple domains based on the
@@ -153,6 +155,12 @@ struct kyber_ctx_queue {
 	struct list_head rq_list[KYBER_MAX_CGROUP][KYBER_NUM_DOMAINS];
 } ____cacheline_aligned_in_smp;
 
+struct kyber_fairness_global {
+	struct timer_list timer;
+	struct request_queue *q;
+	struct task_struct *timer_Thread;
+};
+
 struct kyber_queue_data {
 	struct request_queue *q;
 
@@ -181,7 +189,9 @@ struct kyber_queue_data {
 
 	/* Target latencies in nanoseconds. */
 	u64 latency_targets[KYBER_OTHER];
-	u64 last_refill_time;
+
+	/* For fairness */
+	struct kyber_fairness_global *kfg;
 };
 
 struct kyber_hctx_data {
@@ -194,13 +204,13 @@ struct kyber_hctx_data {
 	struct sbq_wait domain_wait[KYBER_NUM_DOMAINS];
 	struct sbq_wait_state *domain_ws[KYBER_NUM_DOMAINS];
 	atomic_t wait_index[KYBER_NUM_DOMAINS];
+	unsigned int cur_id;
 };
 
 struct kyber_fairness {
 	struct blkg_policy_data pd;
 	unsigned int max_budget;
 	atomic_t cur_budget;
-	bool idle;
 };
 
 struct kyber_fairness_data {
@@ -297,7 +307,7 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 		struct kyber_fairness *kf = blkg_to_kf(blkg);
 
 		if (kf)
-			atomic_set(&kf->cur_budget, kfd->weight);
+			atomic_set(&kf->cur_budget, kfd->weight * KYBER_SCALE_FACTOR);
 	}		
 	spin_unlock_irq(&blkcg->lock);
 
@@ -395,8 +405,7 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	struct kyber_fairness_data *kfd = blkcg_to_kfd(blkg->blkcg);
 
 	kf->max_budget = kfd->weight;
-	atomic_set(&kf->cur_budget, kfd->weight);
-	kf->idle = true;
+	atomic_set(&kf->cur_budget, kfd->weight * KYBER_SCALE_FACTOR);
 }
 
 static void kyber_pd_free(struct blkg_policy_data *pd)
@@ -588,6 +597,36 @@ static unsigned int kyber_sched_tags_shift(struct request_queue *q)
 	return q->queue_hw_ctx[0]->sched_tags->bitmap_tags.sb.shift;
 }
 
+static int kyber_refill_budget(void *arg)
+{
+	struct kyber_fairness_global *kfg = arg;
+	struct kyber_fairness *kf;
+	int id;
+
+	while (!kthread_should_stop()) {
+		for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+			kf = kf_from_id(id, kfg->q);
+
+			if (!kf)
+				break;
+
+			atomic_set(&kf->cur_budget, kf->max_budget * KYBER_SCALE_FACTOR);
+		}
+		set_current_state(TASK_INTERRUPTIBLE);
+		io_schedule();
+	}
+
+	return 0;
+}
+
+static void kyber_refill_fn(struct timer_list *t)
+{
+	struct kyber_fairness_global *kfg = from_timer(kfg, t, timer);
+
+	wake_up_process(kfg->timer_Thread);
+	mod_timer(&kfg->timer, jiffies + msecs_to_jiffies(KYBER_REFILL_TIME));
+}
+
 static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 {
 	struct kyber_queue_data *kqd;
@@ -629,7 +668,9 @@ static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 	shift = kyber_sched_tags_shift(q);
 	kqd->async_depth = (1U << shift) * KYBER_ASYNC_PERCENT / 100U;
 
-	kqd->last_refill_time = ktime_get_ns();
+	kqd->kfg = kmalloc_node(sizeof(*(kqd->kfg)), GFP_KERNEL, q->node);
+	kqd->kfg->q = q;
+	kqd->kfg->timer_Thread = kthread_run(kyber_refill_budget, kqd->kfg, "refill thread");
 
 	return kqd;
 
@@ -669,15 +710,24 @@ static int kyber_init_sched(struct request_queue *q, struct elevator_type *e)
 		return ret;
 	}
 
+	timer_setup(&kqd->kfg->timer, kyber_refill_fn, 0);
+	mod_timer(&kqd->kfg->timer, jiffies + msecs_to_jiffies(KYBER_REFILL_TIME));
+
+	printk("nr_hw_queues: %d\n", q->nr_hw_queues);
+
 	return 0;
 }
 
 static void kyber_exit_sched(struct elevator_queue *e)
 {
 	struct kyber_queue_data *kqd = e->elevator_data;
+	struct kyber_fairness_global *kfg = kqd->kfg;
 	int i;
 
 	del_timer_sync(&kqd->timer);
+	kthread_stop(kfg->timer_Thread);
+	del_timer_sync(&kfg->timer);
+	kfree(kqd->kfg);
 
 	for (i = 0; i < KYBER_NUM_DOMAINS; i++)
 		sbitmap_queue_free(&kqd->domain_tokens[i]);
@@ -750,6 +800,7 @@ static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
 
 	khd->cur_domain = 0;
 	khd->batching = 0;
+	khd->cur_id = 1;
 
 	hctx->sched_data = khd;
 	sbitmap_queue_min_shallow_depth(&hctx->sched_tags->bitmap_tags,
@@ -900,38 +951,11 @@ static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
 	return 0;
 }
 
-static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
-{
-	int id;
-
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		switch (kyber_is_active(id, hctx)) {
-			case -ERANGE:
-				return false;
-			case 1:
-				return true;
-			default:
-				break;
-		}
-	}
-
-	return false;
-}
-
 static void kyber_finish_request(struct request *rq)
 {
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
-	//struct kyber_fairness *kf;
 
 	rq_clear_domain_token(kqd, rq);
-
-/*
-	kf = rq_get_info(rq);
-	if (kf) {
-        atomic_add(rq_get_throtl_sectors(rq), &kf->cur_budget);
-		rq->elv.priv[1] = NULL;
-	}
-*/
 }
 
 static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
@@ -950,6 +974,22 @@ static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
 	}
 
 	atomic_inc(&cpu_latency->buckets[sched_domain][type][bucket]);
+}
+
+static bool kyber_have_to_refill(struct blk_mq_hw_ctx *hctx)
+{
+	struct kyber_fairness *kf;
+	int id;
+
+	for (id = 2; id < KYBER_MAX_CGROUP; id++) {
+		kf = kf_from_id(id, hctx->queue);
+		if (!kf)
+			return true;
+		if (atomic_read(&kf->cur_budget) > 0)
+			return false;
+	}
+
+	return true;
 }
 
 static void kyber_completed_request(struct request *rq, u64 now)
@@ -972,6 +1012,11 @@ static void kyber_completed_request(struct request *rq, u64 now)
 	put_cpu_ptr(kqd->cpu_latency);
 
 	timer_reduce(&kqd->timer, jiffies + HZ / 10);
+
+	if (kyber_have_to_refill(rq->mq_hctx)) {
+		kyber_refill_budget(kqd->q);
+		printk("all cgroup no budgets\n");
+	}
 }
 
 struct flush_kcq_data {
@@ -1138,19 +1183,31 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 {
+	struct kyber_hctx_data *khd = hctx->sched_data;
 	struct kyber_fairness *kf;
 	struct request_queue *q = hctx->queue;
+	bool reverse = false;
+	int hasreq = 0;
 	int id;
 
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
+	for (id = khd->cur_id; id < KYBER_MAX_CGROUP; reverse?id--:id++) {
 		switch (kyber_is_active(id, hctx)) {
 			case -ERANGE:
-				return 0;
+				if (reverse) {
+					return hasreq;
+				} else {
+					reverse = true;
+					break;
+				}
 			case 1:
 				/* kf NEVER can't be NULL */
 				kf = kf_from_id(id, q);
-				if (atomic_read(&kf->cur_budget) > 0)
+				if (atomic_read(&kf->cur_budget) > 0) {
+					khd->cur_id = id;
 					return id;
+				} else {
+					hasreq = -1;
+				}
 			default:
 				break;
 		}
@@ -1160,19 +1217,22 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 	return -ERANGE;
 }
 
-static void kyber_refill_budget(struct request_queue *q)
+static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 {
-	struct kyber_fairness *kf;
 	int id;
-	
+
 	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		kf = kf_from_id(id, q);
-
-		if (!kf)
-			return;
-
-		atomic_set(&kf->cur_budget, kf->max_budget);
+		switch (kyber_is_active(id, hctx)) {
+			case -ERANGE:
+				return false;
+			case 1:
+				return true;
+			default:
+				break;
+		}
 	}
+
+	return false;
 }
 
 static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
@@ -1183,16 +1243,17 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	int cgroup_id;
 	int i;
 
-	if (ktime_get_ns() - kqd->last_refill_time > kyber_latency_targets[KYBER_WRITE]) {
-		kyber_refill_budget(kqd->q);
-		kqd->last_refill_time = ktime_get_ns();
-	}
-
 	spin_lock(&khd->lock);
 
 	do {
 		cgroup_id = kyber_choose_cgroup(hctx);
-	} while (!cgroup_id);
+		if (!cgroup_id) {
+			spin_unlock(&khd->lock);
+			return NULL;
+		}
+	} while (cgroup_id < 0);
+		
+	printk("selected cgroup:[%d]\n", cgroup_id);
 
 	/*
 	 * First, if we are still entitled to batch, try to dispatch a request
@@ -1227,6 +1288,9 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 
 out:
 	spin_unlock(&khd->lock);
+
+	if (rq)
+		printk("[%d] dispatched request\n", bio_to_css_id(rq->bio));
 
 	return rq;
 }
