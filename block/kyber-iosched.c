@@ -306,7 +306,7 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 	hlist_for_each_entry(blkg, &blkcg->blkg_list, blkcg_node) {
 		struct kyber_fairness *kf = blkg_to_kf(blkg);
 
-		if (kf) 
+		if (kf)
 			atomic_set(&kf->cur_budget, kfd->weight * KYBER_SCALE_FACTOR);
 	}		
 	spin_unlock_irq(&blkcg->lock);
