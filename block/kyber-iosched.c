@@ -158,7 +158,7 @@ struct kyber_ctx_queue {
 struct kyber_fairness_global {
 	struct timer_list timer;
 	struct request_queue *q;
-	struct task_struct *timer_thread;
+	struct task_struct *timer_Thread;
 };
 
 struct kyber_queue_data {
@@ -211,7 +211,6 @@ struct kyber_fairness {
 	struct blkg_policy_data pd;
 	unsigned int max_budget;
 	atomic_t cur_budget;
-	u64 act_time;
 };
 
 struct kyber_fairness_data {
@@ -307,10 +306,8 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 	hlist_for_each_entry(blkg, &blkcg->blkg_list, blkcg_node) {
 		struct kyber_fairness *kf = blkg_to_kf(blkg);
 
-		if (kf) {
-			kf->max_budget = kfd->weight;
+		if (kf) 
 			atomic_set(&kf->cur_budget, kfd->weight * KYBER_SCALE_FACTOR);
-		}
 	}		
 	spin_unlock_irq(&blkcg->lock);
 
@@ -626,7 +623,7 @@ static void kyber_refill_fn(struct timer_list *t)
 {
 	struct kyber_fairness_global *kfg = from_timer(kfg, t, timer);
 
-	wake_up_process(kfg->timer_thread);
+	wake_up_process(kfg->timer_Thread);
 	mod_timer(&kfg->timer, jiffies + msecs_to_jiffies(KYBER_REFILL_TIME));
 }
 
@@ -673,7 +670,7 @@ static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 
 	kqd->kfg = kmalloc_node(sizeof(*(kqd->kfg)), GFP_KERNEL, q->node);
 	kqd->kfg->q = q;
-	kqd->kfg->timer_thread = kthread_run(kyber_refill_budget, kqd->kfg, "refill thread");
+	kqd->kfg->timer_Thread = kthread_run(kyber_refill_budget, kqd->kfg, "refill thread");
 
 	return kqd;
 
@@ -728,7 +725,7 @@ static void kyber_exit_sched(struct elevator_queue *e)
 	int i;
 
 	del_timer_sync(&kqd->timer);
-	kthread_stop(kfg->timer_thread);
+	kthread_stop(kfg->timer_Thread);
 	del_timer_sync(&kfg->timer);
 	kfree(kqd->kfg);
 
@@ -979,46 +976,21 @@ static void add_latency_sample(struct kyber_cpu_latency *cpu_latency,
 	atomic_inc(&cpu_latency->buckets[sched_domain][type][bucket]);
 }
 
-static bool kyber_is_idle(int id, struct blk_mq_hw_ctx *hctx)
+static bool kyber_have_to_refill(struct blk_mq_hw_ctx *hctx)
 {
-	struct request_queue *q = hctx->queue;
-	struct kyber_fairness *kf = kf_from_id(id, q);
-	u64 time, cur_time;
+	struct kyber_fairness *kf;
+	int id;
 
-	if(!kf)
-		return true;
+	for (id = 2; id < KYBER_MAX_CGROUP; id++) {
+		kf = kf_from_id(id, hctx->queue);
+		if (!kf)
+			return true;
+		if (atomic_read(&kf->cur_budget) > 0)
+			return false;
+	}
 
-	time = kf->act_time;
-	cur_time = ktime_get_ns();
-	if (kyber_is_active(id, hctx)) {
-		return false;
-	}
-	else if (cur_time - time < 3000000) {
-		return false;
-	}
 	return true;
 }
-
-static bool kyber_try_refill(struct blk_mq_hw_ctx* hctx)
-{
-	struct request_queue* q = hctx->queue;
-	int id;
-	
-	printk("try_refill");
-	for (id = 1; id < KYBER_MAX_CGROUP; id++) {
-		if (!kf_from_id(id, q))
-		       break;
-		if (!kyber_is_idle(id, hctx)) {
-			if (atomic_read(&kf_from_id(id, q)->cur_budget) > 0) {
-				return false;
-			}
-		}
-	}
-	printk("refill");
-	kyber_refill_budget(hctx);
-	return true;
-
-}	
 
 static void kyber_completed_request(struct request *rq, u64 now)
 {
@@ -1041,10 +1013,9 @@ static void kyber_completed_request(struct request *rq, u64 now)
 
 	timer_reduce(&kqd->timer, jiffies + HZ / 10);
 
-	
-	if (kyber_try_refill(rq->mq_hctx)) {
+	if (kyber_have_to_refill(rq->mq_hctx)) {
+		kyber_refill_budget(kqd->q);
 		printk("all cgroup no budgets\n");
-		// ? : all cgroup max_budget need to increase? else? 
 	}
 }
 
@@ -1175,7 +1146,7 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 			kf = kf_from_rq(rq);
 			if (kf) {
-				atomic_sub(blk_rq_sectors(rq), &kf->cur_budget);
+           		atomic_sub(blk_rq_sectors(rq), &kf->cur_budget);
 				printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->cur_budget)+blk_rq_sectors(rq), atomic_read(&kf->cur_budget));
 				rq_set_info(kf, rq);
 			}
@@ -1195,7 +1166,7 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 
 			kf = kf_from_rq(rq);
 			if (kf) {
-				atomic_sub(blk_rq_sectors(rq), &kf->cur_budget);
+            	atomic_sub(blk_rq_sectors(rq), &kf->cur_budget);
 				printk("[%d] budget : %d -> %d\n", cgroup_id, atomic_read(&kf->cur_budget)+blk_rq_sectors(rq), atomic_read(&kf->cur_budget));
 				rq_set_info(kf, rq);
 			}
@@ -1272,7 +1243,6 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	int cgroup_id;
 	int i;
 
-	printk("dispatch_rqeust");
 	spin_lock(&khd->lock);
 
 	do {
