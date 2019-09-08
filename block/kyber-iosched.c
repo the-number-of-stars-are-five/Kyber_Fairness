@@ -14,7 +14,6 @@
 #include <linux/sbitmap.h>
 #include <linux/blk-cgroup.h>
 #include <linux/delay.h>
-#include <linux/timer.h>
 
 #include "blk.h"
 #include "blk-mq.h"
@@ -29,7 +28,7 @@
 #define KYBER_MAX_WEIGHT		1000
 #define KYBER_WEIGHT_LEGACY_DFL	100
 #define KYBER_MAX_CGROUP		100
-#define KYBER_IDLE_TIME			1 * NSEC_PER_MSEC
+#define KYBER_IDLE_TIME			3 * NSEC_PER_MSEC
 
 /*
  * Scheduling domains: the device is divided into multiple domains based on the
@@ -974,12 +973,23 @@ static void kyber_finish_request(struct request *rq)
 	struct kyber_queue_data *kqd = rq->q->elevator->elevator_data;
 	struct kyber_fairness *kf = rq_get_info(rq);
 	bool refill = false;
+	int i;
 
+	//printk("[%d]", kf->pd.blkg->blkcg->css.id);
+	/*struct request_queue *q = hctx->queue;
+	if (kf_from_id(1,q) == kf)
+		printk("[1] time : %llu\n", ktime_get_ns());
+	else if (kf_from_id(2,q) == kf)
+		printk("[2] time : %llu\n", ktime_get_ns());
+	else if (kf_from_id(3,q) == kf)
+		printk("[3] time : %llu\n", ktime_get_ns());
+	*/	
+	
 	rq_clear_domain_token(kqd, rq);
 
 	refill = kyber_try_refill(kf, hctx);
 	while (!refill) {
-		mdelay(2); /* delay 2ms = 2*KYBER_IDLE_TIME */
+		mdelay(1); /* delay ms ~ KYBER_IDLE_TIME */
 		refill = kyber_try_refill(kf, hctx);
 	} 
 }
