@@ -391,7 +391,6 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	kf->weight = kfd->weight;
 	kf->max_budget = kfd->weight * KYBER_SCALE_FACTOR;
 	atomic_set(&kf->cur_budget, kfd->weight * KYBER_SCALE_FACTOR);
-	kfg->total_budget += kf->max_budget;
 
 	INIT_LIST_HEAD(&kf->kf_list);
 	list_move_tail(&kf->kf_list, head);
@@ -586,23 +585,7 @@ static unsigned int kyber_sched_tags_shift(struct request_queue *q)
 	 */
 	return q->queue_hw_ctx[0]->sched_tags->bitmap_tags.sb.shift;
 }
-static void kyber_refill_budget(struct request_queue *q)
-{
-	struct kyber_queue_data *kqd = q->elevator->elevator_data;
-	struct kyber_fairness_global *kfg = kqd->kfg;
-	struct kyber_fairness *kf, *next;
 
-	list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
-		if (atomic_read(&kf->cur_budget) != kf->max_budget) {
-			atomic_set(&kf->cur_budget, kf->max_budget);
-			kf->idle = false;
-		} else {
-			kf->idle = true;
-		}
-	}
-	kfg->last_refill = ktime_get_ns();
-}
-/*
 static void kyber_refill_budget(struct request_queue *q)
 {
 	struct kyber_queue_data *kqd = q->elevator->elevator_data;
@@ -611,7 +594,7 @@ static void kyber_refill_budget(struct request_queue *q)
 	u64 new_total;
 	u64 spend_time = ktime_get_ns() - kfg->last_refill;
 	u64 used = 0;
-	s64 active_remainder = 0;
+	u64 active_remainder = 0;
 	unsigned int active_weight = 0;
 	int shortened = -1;
 
@@ -623,7 +606,9 @@ static void kyber_refill_budget(struct request_queue *q)
 	list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
 		if (atomic_read(&kf->cur_budget) != kf->max_budget) {
 			used += (kf->max_budget - atomic_read(&kf->cur_budget));
-			active_remainder += atomic_read(&kf->cur_budget);
+			printk("<%d>: %llu, ", kf->id, kf->max_budget);
+			if (atomic_read(&kf->cur_budget) > 0)
+				active_remainder += atomic_read(&kf->cur_budget);
 			active_weight += kf->weight;
 			kf->idle = false;
 		} else {
@@ -635,25 +620,24 @@ static void kyber_refill_budget(struct request_queue *q)
 		new_total = used;
 		new_total <<= shortened;
 
-		printk("shortened: %d, used: %lld, new_total: %lld, total_budget: %lld\n", shortened, used, new_total, kfg->total_budget);
-
-		kfg->total_budget = new_total;
 		if (new_total > active_remainder)
 			new_total -= active_remainder;
+
+		printk("shortened: %u, used: %llu, new_total: %llu\n", shortened, used, new_total);
 
 		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
 			if (!kf->idle) {
 				kf->max_budget = (new_total * kf->weight) / active_weight;
+				printk("[%d]: %llu / %llu, ", kf->id, atomic_read(&kf->cur_budget) + kf->max_budget, kf->max_budget);
 				atomic_add(kf->max_budget, &kf->cur_budget);
+				kf->max_budget = atomic_read(&kf->cur_budget);
 			}
-			printk("[%d]: %d, ", kf->id, atomic_read(&kf->cur_budget));
 		}
-		printk("\n");
 	}
 
 	kfg->last_refill = ktime_get_ns();
 }
-*/
+
 static int kyber_refill_thread_fn(void *arg)
 {
 	struct kyber_fairness_global *kfg = arg;
@@ -725,7 +709,6 @@ static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 	kfg->q = q;
 	kfg->nr_kf = 0;
 	kfg->last_refill = ktime_get_ns();
-	kfg->total_budget = 0;
 	INIT_LIST_HEAD(&kfg->kf_list);
 
 	hrtimer_init(&kfg->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
