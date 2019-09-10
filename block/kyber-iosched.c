@@ -397,11 +397,6 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 
 static void kyber_pd_free(struct blkg_policy_data *pd)
 {
-	struct kyber_fairness *kf = pd_to_kf(pd);
-
-	if (kf)
-		list_del_init(&kf->kf_list);
-	
 	kfree(pd_to_kf(pd));
 }
 
