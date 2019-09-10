@@ -1269,9 +1269,11 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	int cgroup_id;
 	int i;
 
-	cgroup_id = kyber_choose_cgroup(hctx);
-	if (cgroup_id <= 0)
-		return NULL;
+	do {
+		cgroup_id = kyber_choose_cgroup(hctx);
+		if (!cgroup_id)
+			return NULL;
+	} while (cgroup_id < 0);
 
 	spin_lock(&khd->lock);
 		
