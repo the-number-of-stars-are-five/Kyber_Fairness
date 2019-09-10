@@ -612,6 +612,7 @@ static void kyber_refill_budget(struct request_queue *q)
 			kf->idle = false;
 		} else {
 			atomic_set(&kf->cur_budget, kf->weight * KYBER_SCALE_FACTOR);
+			kf->next_budget = atomic_read(&kf->cur_budget);
 			kf->idle = true;
 		}
 	}
@@ -623,19 +624,12 @@ static void kyber_refill_budget(struct request_queue *q)
 		new_total <<= shortened;
 
 		printk("shortened: %u, used: %llu, new_total: %llu\n", shortened, used, new_total);
-
 		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
 			if (!kf->idle) {
-				if (new_total > active_remainder) {
-					kf->next_budget = ((new_total - active_remainder) * kf->weight) / active_weight;
-					atomic_add(kf->next_budget, &kf->cur_budget);
-					printk("[%d]: %u / %llu, ", kf->id, atomic_read(&kf->cur_budget), kf->next_budget);
-					kf->next_budget = atomic_read(&kf->cur_budget);
-				} else {
-					kf->next_budget = (new_total * kf->weight) / active_weight;
-					printk("[%d]: %u / %llu, ", kf->id, atomic_read(&kf->cur_budget), kf->next_budget);
-					atomic_set(&kf->cur_budget, kf->next_budget);
-				}
+				kf->next_budget = ((new_total - active_remainder) * kf->weight) / active_weight;
+				atomic_add(kf->next_budget, &kf->cur_budget);
+				printk("[%d]: %u / %llu, ", kf->id, atomic_read(&kf->cur_budget), kf->next_budget);
+				kf->next_budget = atomic_read(&kf->cur_budget);
 			}
 		}
 	}
@@ -972,9 +966,17 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 		struct list_head *head = &kcq->rq_list[id][sched_domain];
 		struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
 		struct kyber_fairness_global *kfg = kqd->kfg;
+		struct kyber_fairness *kf, *next;
 
 		if (id > kfg->nr_kf)
 			kyber_kf_lookup_create(hctx->queue);
+
+		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
+			if (kf->id == id) {
+				kf->idle = false;
+				break;
+			}
+		}
 
 		spin_lock(&kcq->lock);
 		if (at_head)
@@ -1249,10 +1251,8 @@ static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 	struct kyber_fairness *kf, *next;
 
 	list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
-		if (kyber_is_active(kf->id, hctx)) {
-			kf->idle = false;
+		if (kyber_is_active(kf->id, hctx))
 			return true;
-		}
 	}
 
 	return false;
@@ -1269,11 +1269,9 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	int cgroup_id;
 	int i;
 
-	do {
-		cgroup_id = kyber_choose_cgroup(hctx);
-		if (!cgroup_id)
-			return NULL;
-	} while (cgroup_id < 0);
+	cgroup_id = kyber_choose_cgroup(hctx);
+	if (cgroup_id <= 0)
+		return NULL;
 
 	spin_lock(&khd->lock);
 		
