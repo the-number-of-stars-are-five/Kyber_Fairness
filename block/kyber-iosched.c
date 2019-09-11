@@ -218,6 +218,7 @@ struct kyber_fairness {
 	atomic_t cur_budget;
 	struct list_head kf_list;
 	bool idle;
+	spinlock_t lock;
 };
 
 struct kyber_fairness_data {
@@ -284,8 +285,11 @@ static int kyber_io_set_weight_legacy(struct cgroup_subsys_state *css,
 	hlist_for_each_entry(blkg, &blkcg->blkg_list, blkcg_node) {
 		struct kyber_fairness *kf = blkg_to_kf(blkg);
 
-		if (kf)
+		if (kf) {
+			spin_lock(&kf->lock);
 			kf->weight = kfd->weight;
+			spin_unlock(&kf->lock);
+		}
 	}
 	spin_unlock_irq(&blkcg->lock);
 
@@ -393,6 +397,7 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	list_move_tail(&kf->kf_list, head);
 	kf->id = ++kfg->nr_kf;
 	kf->idle = true;
+	spin_lock_init(&kf->lock);
 }
 
 static void kyber_pd_free(struct blkg_policy_data *pd)
@@ -606,18 +611,19 @@ static void kyber_refill_budget(struct request_queue *q)
 			if (atomic_read(&kf->cur_budget) > 0) {
 				active_remainder += atomic_read(&kf->cur_budget);
 				kf->next_budget = atomic_read(&kf->cur_budget);
-				shortened = -1;
 			}
 			active_weight += kf->weight;
+			spin_lock(&kf->lock);
 			kf->idle = false;
+			spin_unlock(&kf->lock);
 		} else {
 			atomic_set(&kf->cur_budget, kf->weight * KYBER_SCALE_FACTOR);
 			kf->next_budget = atomic_read(&kf->cur_budget);
+			spin_lock(&kf->lock);
 			kf->idle = true;
+			spin_unlock(&kf->lock);
 		}
 	}
-	if (shortened < 0)
-		return;
 
 	if (used) {
 		new_total = used;
@@ -625,12 +631,20 @@ static void kyber_refill_budget(struct request_queue *q)
 
 		printk("shortened: %u, used: %llu, new_total: %llu\n", shortened, used, new_total);
 		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
+			spin_lock(&kf->lock);
 			if (!kf->idle) {
-				kf->next_budget = ((new_total - active_remainder) * kf->weight) / active_weight;
-				atomic_add(kf->next_budget, &kf->cur_budget);
-				printk("[%d]: %u / %llu, ", kf->id, atomic_read(&kf->cur_budget), kf->next_budget);
-				kf->next_budget = atomic_read(&kf->cur_budget);
+				if (new_total > active_remainder) {
+					kf->next_budget = ((new_total - active_remainder) * kf->weight) / active_weight;
+					atomic_add(kf->next_budget, &kf->cur_budget);
+					printk("[%d]: %u / %llu, ", kf->id, atomic_read(&kf->cur_budget), kf->next_budget);
+					kf->next_budget = atomic_read(&kf->cur_budget);
+				} else {
+					kf->next_budget = (new_total * kf->weight) / active_weight;
+					printk("[%d]: %u / %llu, ", kf->id, atomic_read(&kf->cur_budget), kf->next_budget);
+					atomic_set(&kf->cur_budget, kf->next_budget);
+				}
 			}
+			spin_unlock(&kf->lock);
 		}
 	}
 	kfg->last_refill = ktime_get_ns();
@@ -973,7 +987,9 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 
 		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
 			if (kf->id == id) {
+				spin_lock(&kf->lock);
 				kf->idle = false;
+				spin_unlock(&kf->lock);
 				break;
 			}
 		}
@@ -1313,8 +1329,12 @@ out:
 
 	if (atomic_read(&khd->cur_kf->cur_budget) <= 0) {
 		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
-			if (!kf->idle && atomic_read(&kf->cur_budget) > 0)
+			spin_lock(&kf->lock);
+			if (!kf->idle && atomic_read(&kf->cur_budget) > 0) {
+				spin_unlock(&kf->lock);
 				return rq;
+			}
+			spin_unlock(&kf->lock);
 		}
 
 		switch (hrtimer_try_to_cancel(&kfg->timer)) {
