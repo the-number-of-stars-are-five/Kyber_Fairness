@@ -161,9 +161,8 @@ struct kyber_fairness_global {
 	struct task_struct *timer_thread;
 	struct list_head kf_list;
 	unsigned int nr_kf;
-	u64 last_refill;
+	atomic_t last_refill;
 	atomic_t last_throtl_weight;
-	u64 last_budget;
 };
 
 struct kyber_queue_data {
@@ -604,56 +603,52 @@ static void kyber_refill_budget(struct request_queue *q)
 	struct kyber_fairness_global *kfg = kqd->kfg;
 	struct kyber_fairness *kf, *next;
 	u64 used = 0;
+	u64 last_refill_time = atomic_read(&kfg->last_refill);
+	unsigned int last_throtl_weight = atomic_read(&kfg->last_throtl_weight);
 	unsigned int active_weight = 0;
-	
+
+	atomic_set(&kfg->last_refill, ktime_get_ns());
+
 	list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
 		u64 spend_time;
 
 		spin_lock(&kf->lock);
 		if (kf->cur_budget != kf->next_budget) {
 			used += (kf->next_budget - kf->cur_budget);
-
-			if (kf->throtl_state && kf->weight >= atomic_read(&kfg->last_throtl_weight)) {
-				spend_time = kf->throtl_time - kfg->last_refill;
+			if (kf->throtl_state && kf->weight >= last_throtl_weight) {
+				spend_time = kf->throtl_time - last_refill_time;
 
 				while (spend_time < KYBER_REFILL_TIME * NSEC_PER_MSEC) {
 					spend_time += (10 * NSEC_PER_MSEC);
 					kf->shortened++;
 				}
-				kf->throtl_state = false;
 			}
-
 			active_weight += kf->weight;
 		} else {
-			if (kf->weight >= atomic_read(&kfg->last_throtl_weight))
+			if (kf->weight >= last_throtl_weight)
 				atomic_set(&kfg->last_throtl_weight, 0);
-			kf->throtl_state = false;
 			kf->idle = true;
-
 			kf->next_budget = kf->weight * KYBER_SCALE_FACTOR;
 			kf->cur_budget = kf->next_budget;
 		}
+
+		kf->throtl_state = false;
 		spin_unlock(&kf->lock);
 	}
 
 	if (used) {
-		used = (used + kfg->last_budget) / 2;
-		kfg->last_budget = used;
 		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
 			spin_lock(&kf->lock);
 			if (!kf->idle) {
 				kf->next_budget = (used * kf->weight) / active_weight;
-
 				if (kf->shortened > 0 && kf->shortened < 100)
 					kf->next_budget += ((used * kf->shortened) / (KYBER_REFILL_TIME - kf->shortened));
-
 				kf->shortened = 0;
 				kf->cur_budget = kf->next_budget;
 			}
 			spin_unlock(&kf->lock);
 		}
 	}
-	kfg->last_refill = ktime_get_ns();
 }
 
 static int kyber_refill_thread_fn(void *arg)
@@ -726,7 +721,7 @@ static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 	kfg = kmalloc_node(sizeof(*kfg), GFP_KERNEL, q->node);
 	kfg->q = q;
 	kfg->nr_kf = 0;
-	kfg->last_refill = ktime_get_ns();
+	atomic_set(&kfg->last_refill, ktime_get_ns());
 	INIT_LIST_HEAD(&kfg->kf_list);
 
 	hrtimer_init(&kfg->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -994,12 +989,13 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 			kyber_kf_lookup_create(hctx->queue);
 
 		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
+			spin_lock(&kf->lock);
 			if (kf->id == id) {
-				spin_lock(&kf->lock);
 				kf->idle = false;
 				spin_unlock(&kf->lock);
 				break;
 			}
+			spin_unlock(&kf->lock);
 		}
 
 		spin_lock(&kcq->lock);
@@ -1299,6 +1295,7 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	struct kyber_fairness *kf, *next;
 	struct request *rq = NULL;
 	ktime_t ktime = ktime_set(0, KYBER_REFILL_TIME * NSEC_PER_MSEC);
+	bool throtl = true;
 	int cgroup_id;
 	int i;
 
@@ -1344,30 +1341,24 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 out:
 	spin_unlock(&khd->lock);
 
-	kf = khd->cur_kf;
-	spin_lock(&kf->lock);
-	if (kf->cur_budget <= 0) {
-		if (!kf->throtl_state) {
+	list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
+		spin_lock(&kf->lock);
+		if (kf->cur_budget <= 0 && !kf->throtl_state) {
 			kf->throtl_state = true;
 			kf->throtl_time = ktime_get_ns();
 			if (kf->weight > atomic_read(&kfg->last_throtl_weight))
 				atomic_set(&kfg->last_throtl_weight, kf->weight);
+		} else if (kf->cur_budget > 0 && !kf->idle) {
+			throtl = false;
 		}
 		spin_unlock(&kf->lock);
+	}
 
-		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
-			spin_lock(&kf->lock);
-			if (!kf->idle && kf->cur_budget > 0) {
-				spin_unlock(&kf->lock);
-				return rq;
-			}
-			spin_unlock(&kf->lock);
-		}
-
+	if (throtl && ktime_get_ns() - atomic_read(&kfg->last_refill) > 10 * NSEC_PER_MSEC) {
 		switch (hrtimer_try_to_cancel(&kfg->timer)) {
 		case -1: /* when the timer is currently executing the callback function and
-				  * cannot be stopped
-				  */
+			  * cannot be stopped
+			  */
 			break;
 		case 0: // when the timer was not active
 		case 1: // when the timer was active
@@ -1375,8 +1366,6 @@ out:
 			kyber_refill_budget(hctx->queue);
 			hrtimer_start(&kfg->timer, ktime, HRTIMER_MODE_REL);
 		}
-	} else {
-		spin_unlock(&kf->lock);
 	}
 
 	return rq;
