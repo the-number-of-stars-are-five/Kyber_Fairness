@@ -163,6 +163,7 @@ struct kyber_fairness_global {
 	unsigned int nr_kf;
 	u64 last_refill;
 	atomic_t last_throtl_weight;
+	u64 last_budget;
 };
 
 struct kyber_queue_data {
@@ -636,6 +637,8 @@ static void kyber_refill_budget(struct request_queue *q)
 	}
 
 	if (used) {
+		used = (used + kfg->last_budget) / 2;
+		kfg->last_budget = used;
 		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
 			spin_lock(&kf->lock);
 			if (!kf->idle) {
