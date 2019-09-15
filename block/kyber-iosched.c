@@ -161,8 +161,8 @@ struct kyber_fairness_global {
 	struct task_struct *timer_thread;
 	struct list_head kf_list;
 	unsigned int nr_kf;
-	atomic_t last_refill;
-	atomic_t last_throtl_weight;
+	u64 last_refill_time;
+	atomic_t last_throttle_weight;
 };
 
 struct kyber_queue_data {
@@ -221,8 +221,8 @@ struct kyber_fairness {
 	s64 cur_budget;
 	bool idle;
 	spinlock_t lock;
-	u64 throtl_time;
-	bool throtl_state;
+	u64 throttle_time;
+	bool throttle_state;
 	unsigned int shortened;
 };
 
@@ -404,8 +404,8 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	kf->id = ++kfg->nr_kf;
 	kf->idle = true;
 	spin_lock_init(&kf->lock);
-	kf->throtl_time = 0;
-	kf->throtl_state = false;
+	kf->throttle_time = 0;
+	kf->throttle_state = false;
 	kf->shortened = 0;
 }
 
@@ -603,36 +603,44 @@ static void kyber_refill_budget(struct request_queue *q)
 	struct kyber_fairness_global *kfg = kqd->kfg;
 	struct kyber_fairness *kf, *next;
 	u64 used = 0;
-	u64 last_refill_time = atomic_read(&kfg->last_refill);
-	unsigned int last_throtl_weight = atomic_read(&kfg->last_throtl_weight);
 	unsigned int active_weight = 0;
-
-	atomic_set(&kfg->last_refill, ktime_get_ns());
 
 	list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
 		u64 spend_time;
+		u64 adjusted_budget;
+		u64 temp;
 
 		spin_lock(&kf->lock);
 		if (kf->cur_budget != kf->next_budget) {
-			used += (kf->next_budget - kf->cur_budget);
-			if (kf->throtl_state && kf->weight >= last_throtl_weight) {
-				spend_time = kf->throtl_time - last_refill_time;
+			used += kf->next_budget - kf->cur_budget;
+			adjusted_budget = 0;
+			if (kf->throttle_state && kf->weight >= atomic_read(&kfg->last_throttle_weight)) {
+				spend_time = kf->throttle_time - kfg->last_refill_time;
+				atomic_set(&kfg->last_throttle_weight, kf->weight);
 
 				while (spend_time < KYBER_REFILL_TIME * NSEC_PER_MSEC) {
 					spend_time += (10 * NSEC_PER_MSEC);
 					kf->shortened++;
 				}
+				if (kf->shortened < 10) {
+					temp = (kf->next_budget - kf->cur_budget) * KYBER_REFILL_TIME;
+					adjusted_budget = div_u64(temp, KYBER_REFILL_TIME - (10 * kf->shortened));
+				} else {
+					adjusted_budget = (kf->next_budget - kf->cur_budget) * 10;
+				}
+				kf->shortened = 0;
 			}
+			kf->next_budget = adjusted_budget;
 			active_weight += kf->weight;
 		} else {
-			if (kf->weight >= last_throtl_weight)
-				atomic_set(&kfg->last_throtl_weight, 0);
 			kf->idle = true;
 			kf->next_budget = kf->weight * KYBER_SCALE_FACTOR;
 			kf->cur_budget = kf->next_budget;
+			if (kf->weight >= atomic_read(&kfg->last_throttle_weight))
+				atomic_set(&kfg->last_throttle_weight, 0);
 		}
 
-		kf->throtl_state = false;
+		kf->throttle_state = false;
 		spin_unlock(&kf->lock);
 	}
 
@@ -640,15 +648,14 @@ static void kyber_refill_budget(struct request_queue *q)
 		list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
 			spin_lock(&kf->lock);
 			if (!kf->idle) {
-				kf->next_budget = (used * kf->weight) / active_weight;
-				if (kf->shortened > 0 && kf->shortened < 100)
-					kf->next_budget += ((used * kf->shortened) / (KYBER_REFILL_TIME - kf->shortened));
-				kf->shortened = 0;
+				kf->next_budget += ((used * kf->weight) / active_weight);
 				kf->cur_budget = kf->next_budget;
 			}
 			spin_unlock(&kf->lock);
 		}
 	}
+
+	kfg->last_refill_time = ktime_get_ns();
 }
 
 static int kyber_refill_thread_fn(void *arg)
@@ -721,13 +728,13 @@ static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 	kfg = kmalloc_node(sizeof(*kfg), GFP_KERNEL, q->node);
 	kfg->q = q;
 	kfg->nr_kf = 0;
-	atomic_set(&kfg->last_refill, ktime_get_ns());
+	kfg->last_refill_time = ktime_get_ns();
 	INIT_LIST_HEAD(&kfg->kf_list);
 
 	hrtimer_init(&kfg->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	kfg->timer.function = kyber_refill_fn;
 
-	atomic_set(&kfg->last_throtl_weight, 0);
+	atomic_set(&kfg->last_throttle_weight, 0);
 
 	kqd->kfg = kfg;
 
@@ -1015,12 +1022,16 @@ static int kyber_is_active(int id, struct blk_mq_hw_ctx *hctx)
 	struct kyber_hctx_data *khd = hctx->sched_data;
 	int domain;
 
+	spin_lock(&khd->lock);
 	for (domain = 0; domain < KYBER_NUM_DOMAINS; domain++) {
 		if (!list_empty_careful(&khd->rqs[id][domain]) ||
-			sbitmap_any_bit_set(&khd->kcq_map[id][domain]))
+			sbitmap_any_bit_set(&khd->kcq_map[id][domain])) {
+				spin_unlock(&khd->lock);
 				return 1;
+		}
 	}
 
+	spin_unlock(&khd->lock);
 	return 0;
 }
 
@@ -1238,17 +1249,27 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 	struct kyber_hctx_data *khd = hctx->sched_data;
 	struct kyber_fairness_global *kfg = kqd->kfg;
 	struct kyber_fairness *kf = khd->cur_kf;
+	ktime_t ktime = ktime_set(0, KYBER_REFILL_TIME * NSEC_PER_MSEC);
 	int hasreq = 0;
+	bool throttle = true;
 
 	list_for_each_entry_from(kf, &kfg->kf_list, kf_list) {
 		spin_lock(&kf->lock);
+		if (!kf->idle && kf->cur_budget > 0)
+			throttle = false;
+
 		if (kyber_is_active(kf->id, hctx)) {
 			if (kf->cur_budget > 0) {
 				khd->cur_kf = kf;
 				spin_unlock(&kf->lock);
+
 				return kf->id;
 			} else {
 				hasreq = -1;
+				if (!kf->throttle_state) {
+					kf->throttle_state = true;
+					kf->throttle_time = ktime_get_ns();
+				}
 			}
 		}
 		spin_unlock(&kf->lock);
@@ -1257,16 +1278,38 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 	kf = list_prev_entry(khd->cur_kf, kf_list);
 	list_for_each_entry_from_reverse(kf, &kfg->kf_list, kf_list) {
 		spin_lock(&kf->lock);
+		if (!kf->idle && kf->cur_budget > 0)
+			throttle = false;
+
 		if (kyber_is_active(kf->id, hctx)) {
 			if (kf->cur_budget > 0) {
 				khd->cur_kf = kf;
 				spin_unlock(&kf->lock);
+
 				return kf->id;
 			} else {
 				hasreq = -1;
+				if (!kf->throttle_state) {
+					kf->throttle_state = true;
+					kf->throttle_time = ktime_get_ns();
+				}
 			}
 		}
 		spin_unlock(&kf->lock);
+	}
+
+	if (throttle) {
+		switch (hrtimer_try_to_cancel(&kfg->timer)) {
+		case -1: /* when the timer is currently executing the callback function and
+			  * cannot be stopped
+			  */
+			break;
+		case 0: // when the timer was not active
+		case 1: // when the timer was active
+		default:
+			kyber_refill_budget(q);
+			hrtimer_start(&kfg->timer, ktime, HRTIMER_MODE_REL);
+		}
 	}
 
 	return hasreq;
@@ -1291,11 +1334,7 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 {
 	struct kyber_queue_data *kqd = hctx->queue->elevator->elevator_data;
 	struct kyber_hctx_data *khd = hctx->sched_data;
-	struct kyber_fairness_global *kfg = kqd->kfg;
-	struct kyber_fairness *kf, *next;
 	struct request *rq = NULL;
-	ktime_t ktime = ktime_set(0, KYBER_REFILL_TIME * NSEC_PER_MSEC);
-	bool throtl = true;
 	int cgroup_id;
 	int i;
 
@@ -1337,36 +1376,8 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 		if (rq)
 			goto out;
 	}
-
 out:
 	spin_unlock(&khd->lock);
-
-	list_for_each_entry_safe(kf, next, &kfg->kf_list, kf_list) {
-		spin_lock(&kf->lock);
-		if (kf->cur_budget <= 0 && !kf->throtl_state) {
-			kf->throtl_state = true;
-			kf->throtl_time = ktime_get_ns();
-			if (kf->weight > atomic_read(&kfg->last_throtl_weight))
-				atomic_set(&kfg->last_throtl_weight, kf->weight);
-		} else if (kf->cur_budget > 0 && !kf->idle) {
-			throtl = false;
-		}
-		spin_unlock(&kf->lock);
-	}
-
-	if (throtl && ktime_get_ns() - atomic_read(&kfg->last_refill) > 10 * NSEC_PER_MSEC) {
-		switch (hrtimer_try_to_cancel(&kfg->timer)) {
-		case -1: /* when the timer is currently executing the callback function and
-			  * cannot be stopped
-			  */
-			break;
-		case 0: // when the timer was not active
-		case 1: // when the timer was active
-		default:
-			kyber_refill_budget(hctx->queue);
-			hrtimer_start(&kfg->timer, ktime, HRTIMER_MODE_REL);
-		}
-	}
 
 	return rq;
 }
