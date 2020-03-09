@@ -1322,7 +1322,7 @@ out:
 
 	spin_lock(&kf->lock);
 
-	if (rq->cmd_flags == REQ_OP_WRITE)
+	if (op_is_write(req_op(rq)))
 		kf->cur_budget -= blk_rq_sectors(rq) * kfg->wr_scale;
 	else
 		kf->cur_budget -= blk_rq_sectors(rq);
