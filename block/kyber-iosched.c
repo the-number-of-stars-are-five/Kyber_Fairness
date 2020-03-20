@@ -445,7 +445,7 @@ static void kyber_pd_free(struct blkg_policy_data *pd)
 				rqs = &khd->rqs[kf->id][sched_domain];
 				kyber_flush_busy_kcqs(khd, kf->id, sched_domain, rqs);
 				list_splice_tail_init(&khd->rqs[kf->id][sched_domain],
-						&khd->rqs[1][sched_domain]);
+						&khd->rqs[0][sched_domain]);
 			}
 			spin_unlock(&khd->lock);
 		}
@@ -701,7 +701,7 @@ static void kyber_refill_budget(struct request_queue *q)
 	unsigned int active_weight = 0;
 	int id, shortened = -1;
 
-	for (id = 1; id <= atomic_read(&kfg->nr_kf); id++) {
+	for (id = 0; id <= atomic_read(&kfg->nr_kf); id++) {
 		kf = kf_from_list(q, id);
 
 		spin_lock(&kf->lock);
@@ -735,7 +735,7 @@ static void kyber_refill_budget(struct request_queue *q)
 		if (used > remainder)
 			used -= remainder;
 			
-		for (id = 1; id <= atomic_read(&kfg->nr_kf); id++) {
+		for (id = 0; id <= atomic_read(&kfg->nr_kf); id++) {
 			kf = kf_from_list(q, id);
 
 			spin_lock(&kf->lock);
@@ -836,6 +836,7 @@ static struct kyber_fairness_global *kyber_fairness_global_init
 		(struct kyber_queue_data *kqd)
 {
 	struct kyber_fairness_global *kfg;
+	struct kyber_fairness *kf;
 	struct request_queue *q = kqd->q;
 	int bucket, sched_domain;
 
@@ -884,6 +885,17 @@ static struct kyber_fairness_global *kyber_fairness_global_init
 
 	hrtimer_init(&kfg->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	kfg->timer.function = kyber_refill_fn;
+
+	kf = kzalloc_node(sizeof(*kf), GFP_KERNEL, q->node);
+
+	kf->weight = 100;
+	kf->next_budget = kf->weight * KYBER_SCALE_FACTOR;
+	kf->cur_budget = kf->next_budget;
+	kf->id = 0;
+	kf->idle = true;
+	spin_lock_init(&kf->lock);
+
+	kfg->kf_list[0] = kf;
 
 	kqd->kfg = kfg;
 
@@ -939,6 +951,8 @@ static void kyber_exit_sched(struct elevator_queue *e)
 	del_timer_sync(&kqd->timer);
 	hrtimer_cancel(&kfg->timer);
 	kthread_stop(kfg->timer_thread);
+
+	kfree(kfg->kf_list[0]);
 	kfree(kqd->kfg);
 
 	for (i = 0; i < KYBER_NUM_DOMAINS; i++)
@@ -1371,7 +1385,7 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 	unsigned int id = kf->id;
 	bool throttle = true, reverse = false;
 
-	while (id <= atomic_read(&kfg->nr_kf) && id >= 1) {
+	while (id <= atomic_read(&kfg->nr_kf) && id >= 0) {
 		kf = kf_from_list(q, id);
 
 		if (!kyber_is_active(id, hctx))
@@ -1419,7 +1433,7 @@ static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 	unsigned int cur_id = kf->id, id = kf->id;
 	bool reverse = false;
 
-	while (id <= atomic_read(&kfg->nr_kf) && id >= 1) {
+	while (id <= atomic_read(&kfg->nr_kf) && id >= 0) {
 		kf = kf_from_list(q, id);
 
 		if (kyber_is_active(id, hctx))
