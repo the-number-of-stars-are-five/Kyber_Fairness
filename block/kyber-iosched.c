@@ -1129,8 +1129,6 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 
 		kf = kf_from_list(hctx->queue, id);
 
-		printk("%d\n", id);
-
 		spin_lock(&kf->lock);
 		if (kf->idle)
 			kf->idle = false;
