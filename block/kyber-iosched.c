@@ -410,11 +410,42 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	spin_lock_init(&kf->lock);
 }
 
-static bool kyber_is_active(int id, struct blk_mq_hw_ctx *hctx);
+struct flush_kcq_data {
+	struct kyber_hctx_data *khd;
+	unsigned int sched_id;
+	unsigned int sched_domain;
+	struct list_head *list;
+};
+
+static bool flush_busy_kcq(struct sbitmap *sb, unsigned int bitnr, void *data)
+{
+	struct flush_kcq_data *flush_data = data;
+	struct kyber_ctx_queue *kcq = &flush_data->khd->kcqs[bitnr];
+
+	spin_lock(&kcq->lock);
+	list_splice_tail_init(&kcq->rq_list[flush_data->sched_id][flush_data->sched_domain],
+			flush_data->list);
+	sbitmap_clear_bit(sb, bitnr);
+	spin_unlock(&kcq->lock);
+
+	return true;
+}
+
 static void kyber_flush_busy_kcqs(struct kyber_hctx_data *khd,
 		unsigned int sched_id,
 		unsigned int sched_domain,
-		struct list_head *list);
+		struct list_head *list)
+{
+	struct flush_kcq_data data = {
+		.khd = khd,
+		.sched_id = sched_id,
+		.sched_domain = sched_domain,
+		.list = list,
+	};
+
+	sbitmap_for_each_set(&khd->kcq_map[sched_id][sched_domain],
+			flush_busy_kcq, &data);
+}
 
 static void kyber_pd_free(struct blkg_policy_data *pd)
 {
@@ -1191,43 +1222,6 @@ static void kyber_completed_request(struct request *rq, u64 now)
 	put_cpu_ptr(kqd->cpu_latency);
 
 	timer_reduce(&kqd->timer, jiffies + HZ / 10);
-}
-
-struct flush_kcq_data {
-	struct kyber_hctx_data *khd;
-	unsigned int sched_id;
-	unsigned int sched_domain;
-	struct list_head *list;
-};
-
-static bool flush_busy_kcq(struct sbitmap *sb, unsigned int bitnr, void *data)
-{
-	struct flush_kcq_data *flush_data = data;
-	struct kyber_ctx_queue *kcq = &flush_data->khd->kcqs[bitnr];
-
-	spin_lock(&kcq->lock);
-	list_splice_tail_init(&kcq->rq_list[flush_data->sched_id][flush_data->sched_domain],
-			flush_data->list);
-	sbitmap_clear_bit(sb, bitnr);
-	spin_unlock(&kcq->lock);
-
-	return true;
-}
-
-static void kyber_flush_busy_kcqs(struct kyber_hctx_data *khd,
-		unsigned int sched_id,
-		unsigned int sched_domain,
-		struct list_head *list)
-{
-	struct flush_kcq_data data = {
-		.khd = khd,
-		.sched_id = sched_id,
-		.sched_domain = sched_domain,
-		.list = list,
-	};
-
-	sbitmap_for_each_set(&khd->kcq_map[sched_id][sched_domain],
-			flush_busy_kcq, &data);
 }
 
 static int kyber_domain_wake(wait_queue_entry_t *wqe, unsigned mode, int flags,
