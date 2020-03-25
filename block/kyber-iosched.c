@@ -1129,6 +1129,8 @@ static void kyber_insert_requests(struct blk_mq_hw_ctx *hctx,
 
 		kf = kf_from_list(hctx->queue, id);
 
+		printk("%d\n", id);
+
 		spin_lock(&kf->lock);
 		if (kf->idle)
 			kf->idle = false;
@@ -1420,7 +1422,7 @@ next:
 	if (throttle && hrtimer_try_to_cancel(&kfg->timer) >= 0)
 		kyber_refill_fn(&kfg->timer);
 
-	return 0;
+	return -1;
 }
 
 static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
@@ -1463,7 +1465,7 @@ static struct request *kyber_dispatch_request(struct blk_mq_hw_ctx *hctx)
 
 	cgroup_id = kyber_choose_cgroup(hctx);
 
-	if (!cgroup_id)
+	if (cgroup_id < 0)
 		goto out;
 
 	/*
