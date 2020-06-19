@@ -27,7 +27,7 @@
 #define KYBER_MAX_WEIGHT		1000
 #define KYBER_WEIGHT_LEGACY_DFL	100
 #define KYBER_MAX_CGROUP		100
-#define KYBER_REFILL_TIME		100//ms
+#define KYBER_REFILL_TIME		100 * NSEC_PER_MSEC
 #define KYBER_SCALE_FACTOR		16
 
 /*
@@ -170,6 +170,7 @@ struct kyber_fairness {
 
 	s64 next_budget;
 	s64 cur_budget;
+	s64 used_budget;
 
 	bool idle;
 	spinlock_t lock;
@@ -186,8 +187,6 @@ struct kyber_fairness_global {
 
 	struct hrtimer timer;
 	struct task_struct *timer_thread;
-
-	struct kyber_fairness *root_kf;
 
 	struct list_head use_list;
 	struct list_head free_list;
@@ -419,6 +418,7 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	kf->weight = kfd->weight;
 	kf->next_budget = kfd->weight * KYBER_SCALE_FACTOR;
 	kf->cur_budget = kf->next_budget;
+	kf->used_budget = 0;
 
 	kf->idle = true;
 	spin_lock_init(&kf->lock);
@@ -434,9 +434,6 @@ static void kyber_pd_init(struct blkg_policy_data *pd)
 	kf->id_list = id_list;
 	kf->id = id_list->id;
 	kf->kfg = kfg;
-
-	if (!kfg->root_kf)
-		kfg->root_kf = kf;
 }
 
 struct flush_kcq_data {
@@ -506,6 +503,8 @@ static void kyber_pd_free(struct blkg_policy_data *pd)
 				list_splice_tail_init(&khd->rqs[kf->id][sched_domain],
 						&khd->rqs[0][sched_domain]);
 			}
+			if (khd->cur_kf == kf)
+				khd->cur_kf = NULL;
 			spin_unlock(&khd->lock);
 		}
 	}
@@ -729,53 +728,44 @@ static void kyber_refill_budget(struct request_queue *q)
 	struct kyber_fairness_global *kfg = kqd->kfg;
 	struct kyber_fairness *kf;
 	struct kyber_id_list *id_list;
-	u64 spend_time, temp, used = 0, remainder = 0;
+	u64 spend_time, bw = 0;
 	unsigned int active_weight = 0;
-	int shortened = -1;
+	unsigned int shortened = 0;
 
 	list_for_each_entry_rcu(id_list, &kfg->use_list, list) {
 		kf = id_list->kf;
 
 		spin_lock(&kf->lock);
-		if (kf->cur_budget != kf->next_budget) {
-			used += kf->next_budget - kf->cur_budget;
-			if (kf->cur_budget > 0)
-				remainder += kf->cur_budget;
-			active_weight += kf->weight;
-		} else {
+
+		if (kf->used_budget == 0) {
 			kf->idle = true;
-			kf->next_budget = kf->weight * KYBER_SCALE_FACTOR;
-			kf->cur_budget = kf->next_budget;
+		} else {
+			bw += kf->used_budget;
+			active_weight += kf->weight;
+
+			if (kf->cur_budget > kf->next_budget)
+				kf->cur_budget = kf->next_budget - kf->used_budget;
+
+			kf->used_budget = 0;
 		}
 		spin_unlock(&kf->lock);
 	}
 
-	if (used) {
+	if (bw) {
 		spend_time = ktime_get_ns() - kfg->last_refill_time;
-		while (spend_time < KYBER_REFILL_TIME * NSEC_PER_MSEC) {
-			spend_time += (10 * NSEC_PER_MSEC);
-			shortened++;
-		}
 
-		if (shortened < 10) {
-			temp = used * KYBER_REFILL_TIME;
-			used = div64_u64(temp, KYBER_REFILL_TIME - (10 * shortened));
-		} else {
-			used *= 10;
-		}
+		if (spend_time)
+			shortened = div64_u64(KYBER_REFILL_TIME, spend_time);
 
-		if (used > remainder)
-			used -= remainder;
-			
+		if (shortened > 1)
+			bw *= shortened;
+
 		list_for_each_entry_rcu(id_list, &kfg->use_list, list) {
 			kf = id_list->kf;
 
 			spin_lock(&kf->lock);
-			if (!kf->idle) {
-				kf->next_budget = div_u64(used * kf->weight, active_weight);
-				kf->cur_budget = kf->next_budget;
-				kf->next_budget = kf->cur_budget;
-			}
+			kf->next_budget = div_u64(bw * kf->weight, active_weight);
+			kf->cur_budget += kf->next_budget;
 			spin_unlock(&kf->lock);
 		}
 	}
@@ -805,7 +795,7 @@ static enum hrtimer_restart kyber_refill_fn(struct hrtimer *timer)
 {
 	struct kyber_fairness_global *kfg = 
 		container_of(timer, struct kyber_fairness_global, timer);
-	ktime_t ktime = ktime_set(0, KYBER_REFILL_TIME * NSEC_PER_MSEC);
+	ktime_t ktime = ktime_set(0, KYBER_REFILL_TIME);
 
 	wake_up_process(kfg->timer_thread);
 
@@ -926,8 +916,6 @@ static struct kyber_fairness_global *kyber_fairness_global_init
 		list_add_tail_rcu(&id_list->list, &kfg->free_list);
 	}
 
-	kfg->root_kf = NULL;
-
 	kqd->kfg = kfg;
 
 	return kfg;
@@ -939,7 +927,7 @@ static int kyber_init_sched(struct request_queue *q, struct elevator_type *e)
 	struct kyber_fairness_global *kfg;
 	struct elevator_queue *eq;
 	struct kyber_id_list *id_list;
-	ktime_t ktime = ktime_set(0, KYBER_REFILL_TIME * NSEC_PER_MSEC);
+	ktime_t ktime = ktime_set(0, KYBER_REFILL_TIME);
 	int ret, i;
 
 	eq = elevator_alloc(q, e);
@@ -1081,7 +1069,7 @@ static int kyber_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx)
 	khd->cur_domain = 0;
 	khd->batching = 0;
 
-	khd->cur_kf = kqd->kfg->root_kf;
+	khd->cur_kf = NULL;
 
 	hctx->sched_data = khd;
 	sbitmap_queue_min_shallow_depth(&hctx->sched_tags->bitmap_tags,
@@ -1320,6 +1308,7 @@ kyber_dispatch_cur_domain(struct kyber_queue_data *kqd,
 	struct list_head *rqs;
 	struct request *rq;
 	struct kyber_fairness *kf;
+	u64 sz;
 	int nr;
 
 	rqs = &khd->rqs[cgroup_id][khd->cur_domain];
@@ -1374,9 +1363,12 @@ out:
 	spin_lock(&kf->lock);
 
 	if (op_is_write(req_op(rq)))
-		kf->cur_budget -= blk_rq_sectors(rq) * kf->kfg->wr_scale;
+		sz = blk_rq_sectors(rq) * kf->kfg->wr_scale;
 	else
-		kf->cur_budget -= blk_rq_sectors(rq);
+		sz = blk_rq_sectors(rq);
+
+	kf->cur_budget -= sz;
+	kf->used_budget += sz;
 
 	spin_unlock(&kf->lock);
 
@@ -1405,7 +1397,16 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 	struct kyber_fairness_global *kfg = kqd->kfg;
 	struct kyber_fairness *kf = khd->cur_kf;
 	struct kyber_id_list *id_list;
-	bool throttle = true;
+	bool throttled = false;
+
+	if (kf && kyber_is_active(kf->id, hctx)) {
+		spin_lock(&kf->lock);
+		if (kf->cur_budget > 0) {
+			spin_unlock(&kf->lock);
+			return kf->id;
+		}
+		spin_unlock(&kf->lock);
+	}
 
 	list_for_each_entry_rcu(id_list, &kfg->use_list, list) {
 		kf = id_list->kf;
@@ -1426,12 +1427,12 @@ static int kyber_choose_cgroup(struct blk_mq_hw_ctx *hctx)
 skip:
 		spin_lock(&kf->lock);
 		if (!kf->idle && kf->cur_budget > 0)
-			throttle = false;
+			throttled = true;
 next:
 		spin_unlock(&kf->lock);
 	}
 
-	if (throttle && hrtimer_try_to_cancel(&kfg->timer) >= 0)
+	if (!throttled && hrtimer_try_to_cancel(&kfg->timer) >= 0)
 		kyber_refill_fn(&kfg->timer);
 
 	return -1;
@@ -1442,14 +1443,19 @@ static bool kyber_has_work(struct blk_mq_hw_ctx *hctx)
 	struct request_queue *q = hctx->queue;
 	struct kyber_queue_data *kqd = q->elevator->elevator_data;
 	struct kyber_fairness_global *kfg = kqd->kfg;
-	struct kyber_fairness *kf;
+	struct kyber_hctx_data *khd = hctx->sched_data;
 	struct kyber_id_list *id_list;
 
-	list_for_each_entry_rcu(id_list, &kfg->use_list, list) {
-		kf = id_list->kf;
+	if (khd->cur_kf && kyber_is_active(khd->cur_kf->id, hctx)) {
+		khd->cur_kf->idle = false;
+		return true;
+	}
 
-		if (kyber_is_active(kf->id, hctx))
+	list_for_each_entry_rcu(id_list, &kfg->use_list, list) {
+		if (kyber_is_active(id_list->kf->id, hctx)) {
+			id_list->kf->idle = false;
 			return true;
+		}
 	}
 
 	return false;
