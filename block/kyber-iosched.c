@@ -29,6 +29,7 @@
 #define KYBER_MAX_CGROUP		100
 #define KYBER_REFILL_TIME		100 * NSEC_PER_MSEC
 #define KYBER_SCALE_FACTOR		16
+#define KYBER_MOVAVG_CNT		10
 
 /*
  * Scheduling domains: the device is divided into multiple domains based on the
@@ -195,6 +196,9 @@ struct kyber_fairness_global {
 	u64 num_rq[KYBER_OTHER];
 	u64 latency[KYBER_OTHER];
 	u64 calc_lat[KYBER_OTHER][KYBER_LATENCY_BUCKETS];
+	u64 moving_avg[KYBER_MOVAVG_CNT];
+	int avg_ptr;
+	u64 sum_bw;
 
 	u64 last_refill_time;
 	bool has_work;
@@ -731,6 +735,7 @@ static void kyber_refill_budget(struct request_queue *q)
 	u64 spend_time, bw = 0;
 	unsigned int active_weight = 0;
 	unsigned int shortened = 0;
+	unsigned int i;
 
 	list_for_each_entry_rcu(id_list, &kfg->use_list, list) {
 		kf = id_list->kf;
@@ -759,6 +764,20 @@ static void kyber_refill_budget(struct request_queue *q)
 
 		if (shortened > 1)
 			bw *= shortened;
+
+		if (kfg->avg_ptr < 0) {
+			for (i = 0 ; i < KYBER_MOVAVG_CNT; i++) {
+				kfg->moving_avg[i] = bw;
+			}
+			kfg->avg_ptr = 0;
+			kfg->sum_bw = bw * KYBER_MOVAVG_CNT;
+		} else {
+			kfg->sum_bw -= kfg->moving_avg[kfg->avg_ptr];
+			kfg->moving_avg[kfg->avg_ptr] = bw;
+			kfg->sum_bw += bw;
+			kfg->avg_ptr = (kfg->avg_ptr + 1) % KYBER_MOVAVG_CNT;
+		}
+		bw = div64_u64(kfg->sum_bw, KYBER_MOVAVG_CNT);
 
 		list_for_each_entry_rcu(id_list, &kfg->use_list, list) {
 			kf = id_list->kf;
@@ -915,6 +934,12 @@ static struct kyber_fairness_global *kyber_fairness_global_init
 		id_list->id = i;
 		list_add_tail_rcu(&id_list->list, &kfg->free_list);
 	}
+
+	for (i = 0; i < KYBER_MOVAVG_CNT; i++) {
+			kfg->moving_avg[i] = 0;
+	}
+	kfg->avg_ptr = -1;
+	kfg->sum_bw = 0;
 
 	kqd->kfg = kfg;
 
